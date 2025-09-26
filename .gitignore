@@ -1,0 +1,8 @@
+# Environment variables
+.env
+
+# Node modules folder
+node_modules/
+
+# Secret key files
+keyfile.json
