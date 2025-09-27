@@ -5,138 +5,173 @@ import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
 
-// ✅ 1. IMPORT FIREBASE AND GOOGLE CLOUD
+// ✅ Firebase + Google Cloud
 import admin from "firebase-admin";
 import speech from "@google-cloud/speech";
 
 dotenv.config();
 
-// ✅ 2. CORRECTLY INITIALIZE SERVICES WITH CREDENTIALS
-// Read credentials from the single environment variable
+// ✅ Load service account from environment variable
 const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
 
-// Initialize Firebase Admin SDK for Firestore access
+// Initialize Firebase Admin SDK
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
 });
 const db = admin.firestore();
 
-// Initialize Google Speech Client with the same credentials
+// Initialize Google Speech Client
 const client = new speech.SpeechClient({ credentials: serviceAccount });
-
 
 const app = express();
 app.use(bodyParser.json());
 const upload = multer({ dest: "uploads/" });
 
-// ✅ 3. LIVE DATABASE FUNCTION
-// This function queries your actual Firestore 'jobs' collection
+// -------------------------
+// Firestore: get jobs function
+// -------------------------
 async function getJobsFromDatabase({ location, keyword }) {
-    console.log(`Querying Firestore for jobs. Location: ${location}, Keyword: ${keyword}`);
-    try {
-        let query = db.collection('jobs');
-        if (location) {
-            query = query.where('location', '==', location);
-        }
-        if (keyword) {
-            const keywords = keyword.toLowerCase().split(/, |,/);
-            query = query.where('requiredSkills', 'array-contains-any', keywords);
-        }
+  console.log(`Querying Firestore. Location: ${location}, Keyword: ${keyword}`);
+  try {
+    let query = db.collection("jobs");
 
-        const snapshot = await query.get();
-        if (snapshot.empty) {
-            return JSON.stringify([]);
-        }
-
-        const jobs = [];
-        snapshot.forEach(doc => {
-            jobs.push({ id: doc.id, ...doc.data() });
-        });
-        
-        return JSON.stringify(jobs);
-    } catch (error) {
-        console.error("Error fetching from Firestore:", error);
-        return JSON.stringify({ error: "Failed to fetch jobs." });
+    if (location) query = query.where("location", "==", location);
+    if (keyword) {
+      const keywords = keyword.toLowerCase().split(/, |,/);
+      query = query.where("requiredSkills", "array-contains-any", keywords);
     }
+
+    const snapshot = await query.get();
+    if (snapshot.empty) return [];
+
+    const jobs = [];
+    snapshot.forEach(doc => jobs.push({ id: doc.id, ...doc.data() }));
+    return jobs;
+  } catch (err) {
+    console.error("Error fetching jobs from Firestore:", err);
+    return { error: "Failed to fetch jobs." };
+  }
 }
 
-// ✅ 4. DEFINE THE TOOLS FOR THE LLM
+// -------------------------
+// Tools for LLM
+// -------------------------
 const tools = [
-    {
-        type: "function",
-        function: {
-            name: "get_jobs",
-            description: "Get a list of available jobs from the PGRKAM platform based on location and skills/keywords.",
-            parameters: {
-                type: "object",
-                properties: {
-                    location: { type: "string", description: "The city to search for jobs in." },
-                    keyword: { type: "string", description: "A keyword or comma-separated list of skills." },
-                },
-                required: [],
-            },
+  {
+    type: "function",
+    function: {
+      name: "get_jobs",
+      description: "Get a list of available jobs from PGRKAM based on location and skills/keywords.",
+      parameters: {
+        type: "object",
+        properties: {
+          location: { type: "string", description: "City to search jobs in." },
+          keyword: { type: "string", description: "Comma-separated skills." }
         },
+        required: []
+      }
     }
+  }
 ];
 
-// ✅ 5. FINAL, INTELLIGENT CHAT ENDPOINT
+// -------------------------
+// Chat endpoint
+// -------------------------
 app.post("/chat", async (req, res) => {
-    const { history, userProfile } = req.body;
+  const { history, userProfile } = req.body;
 
-    let systemPrompt = `You are a helpful and encouraging assistant for the Punjab Ghar Ghar Rozgar and Karobar Mission (PGRKAM) digital platform. Your purpose is to help users with job searches, skill development, and foreign counseling.`;
-    if (userProfile && userProfile.skills) {
-        systemPrompt += ` The user you are speaking with has skills in: ${userProfile.skills}. Use this to provide personalized recommendations. If they ask for jobs, implicitly use their skills as keywords.`;
+  // Build system prompt
+  let systemPrompt = `You are a helpful assistant for the Punjab Ghar Ghar Rozgar and Karobar Mission (PGRKAM) digital platform. Your purpose is to help users with job searches, skill development, and foreign counseling.`;
+  if (userProfile && Array.isArray(userProfile.skills) && userProfile.skills.length > 0) {
+    systemPrompt += ` The user has skills in: ${userProfile.skills.join(", ")}. Use these to provide personalized recommendations.`;
+  }
+
+  // Ensure history is always an array
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...(Array.isArray(history) ? history : [])
+  ];
+
+  try {
+    // First OpenAI request
+    const initialResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json", 
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}` 
+      },
+      body: JSON.stringify({
+        model: "gpt-3.5-turbo",
+        messages,
+        tools,
+        tool_choice: "auto"
+      })
+    });
+
+    const data = await initialResponse.json();
+    const message = data.choices[0].message;
+
+    // Handle tool calls
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      const toolCall = message.tool_calls[0];
+      const functionName = toolCall.function.name;
+      const functionArgs = JSON.parse(toolCall.function.arguments);
+
+      const functionResult = await getJobsFromDatabase(functionArgs);
+
+      const secondApiMessages = [
+        ...messages,
+        message,
+        { tool_call_id: toolCall.id, role: "tool", name: functionName, content: JSON.stringify(functionResult) }
+      ];
+
+      const finalResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json", 
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}` 
+        },
+        body: JSON.stringify({ model: "gpt-3.5-turbo", messages: secondApiMessages })
+      });
+
+      const finalData = await finalResponse.json();
+      res.json({ reply: finalData.choices[0].message.content });
+    } else {
+      res.json({ reply: message.content });
     }
-    
-    const messages = [
-        { role: "system", content: systemPrompt },
-        ...history
-    ];
-
-    try {
-        const initialResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-            body: JSON.stringify({
-                model: "gpt-3.5-turbo",
-                messages: messages,
-                tools: tools,
-                tool_choice: "auto",
-            }),
-        });
-
-        const data = await initialResponse.json();
-        const message = data.choices[0].message;
-
-        if (message.tool_calls) {
-            const toolCall = message.tool_calls[0];
-            const functionName = toolCall.function.name;
-            const functionArgs = JSON.parse(toolCall.function.arguments);
-
-            const functionResult = await getJobsFromDatabase(functionArgs);
-
-            const secondApiMessages = [ ...messages, message, { tool_call_id: toolCall.id, role: "tool", name: functionName, content: functionResult }];
-            
-            const finalResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-                method: "POST",
-                headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-                body: JSON.stringify({ model: "gpt-3.5-turbo", messages: secondApiMessages }),
-            });
-
-            const finalData = await finalResponse.json();
-            res.json({ reply: finalData.choices[0].message.content });
-        } else {
-            res.json({ reply: message.content });
-        }
-    } catch (err) {
-        console.error("Error in /chat endpoint:", err);
-        res.status(500).send("Error connecting to OpenAI API");
-    }
+  } catch (err) {
+    console.error("Error in /chat endpoint:", err);
+    res.status(500).send("Error connecting to OpenAI API");
+  }
 });
 
-// Your /stt endpoint is correct but benefits from the credential fix
+// -------------------------
+// Speech-to-text endpoint
+// -------------------------
 app.post("/stt", upload.single("audio"), async (req, res) => {
-    // ... same logic as your file, it will now use the correctly initialized 'client'
+  if (!req.file) return res.status(400).send("No audio file uploaded");
+
+  try {
+    const audioBytes = fs.readFileSync(req.file.path).toString("base64");
+
+    const [response] = await client.recognize({
+      config: {
+        encoding: "LINEAR16",
+        sampleRateHertz: 16000,
+        languageCode: "en-US"
+      },
+      audio: { content: audioBytes }
+    });
+
+    const transcription = response.results.map(r => r.alternatives[0].transcript).join("\n");
+    res.json({ transcript: transcription });
+  } catch (err) {
+    console.error("Error in /stt endpoint:", err);
+    res.status(500).send("STT processing failed");
+  } finally {
+    // Clean up uploaded file
+    fs.unlink(req.file.path, () => {});
+  }
 });
 
 const PORT = process.env.PORT || 5000;
