@@ -21,7 +21,14 @@ admin.initializeApp({
 const db = admin.firestore();
 
 // ✅ Google Cloud Speech client
-const client = new speech.SpeechClient({ credentials: serviceAccount });
+// ✅ new
+const client = new speech.SpeechClient({
+  projectId: serviceAccount.project_id,
+  credentials: {
+    client_email: serviceAccount.client_email,
+    private_key: serviceAccount.private_key,
+  },
+});
 
 const app = express();
 app.use(bodyParser.json());
