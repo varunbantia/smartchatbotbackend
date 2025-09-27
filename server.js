@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
 
-// ✅ Google Cloud Speech
+// ✅ Google Cloud Speech (optional)
 import speech from "@google-cloud/speech";
 
 dotenv.config();
@@ -14,27 +14,42 @@ const app = express();
 app.use(bodyParser.json());
 const upload = multer({ dest: "uploads/" });
 
-// Initialize Google Speech Client (optional, if using STT)
+// Initialize Google Speech Client
 const client = new speech.SpeechClient({
   credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON),
 });
 
 // -------------------------
-// Chat endpoint
+// Example Tools / Function Calls
+// -------------------------
+// You can add more tools here later
+const tools = [
+  {
+    type: "function",
+    function: {
+      name: "get_time",
+      description: "Returns the current server time",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+];
+
+// -------------------------
+// Chat endpoint with function support
 // -------------------------
 app.post("/chat", async (req, res) => {
   const { history } = req.body;
 
-  // Default system prompt
-  const systemPrompt = "You are a helpful and friendly AI chatbot. Assist the user in a conversational manner.";
+  const systemPrompt =
+    "You are a helpful and friendly AI chatbot. Assist the user in a conversational manner. You can also call functions if needed.";
 
-  // Ensure history is always an array
   const messages = [
     { role: "system", content: systemPrompt },
     ...(Array.isArray(history) ? history : []),
   ];
 
   try {
+    // Initial OpenAI request
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -44,12 +59,55 @@ app.post("/chat", async (req, res) => {
       body: JSON.stringify({
         model: "gpt-3.5-turbo",
         messages,
+        tools,          // Pass the tools here
+        tool_choice: "auto",
       }),
     });
 
     const data = await response.json();
-    const message = data.choices[0].message.content;
-    res.json({ reply: message });
+    const message = data.choices[0].message;
+
+    // Check if the model wants to call a function
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      const toolCall = message.tool_calls[0];
+      const functionName = toolCall.function.name;
+      const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
+
+      // Handle tool calls (add more actions here)
+      let functionResult;
+      if (functionName === "get_time") {
+        functionResult = { time: new Date().toISOString() };
+      } else {
+        functionResult = { error: "Function not implemented yet." };
+      }
+
+      // Add tool call result to conversation
+      const secondApiMessages = [
+        ...messages,
+        message,
+        {
+          tool_call_id: toolCall.id,
+          role: "tool",
+          name: functionName,
+          content: JSON.stringify(functionResult),
+        },
+      ];
+
+      const finalResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({ model: "gpt-3.5-turbo", messages: secondApiMessages }),
+      });
+
+      const finalData = await finalResponse.json();
+      res.json({ reply: finalData.choices[0].message.content });
+    } else {
+      // Normal chat response
+      res.json({ reply: message.content });
+    }
   } catch (err) {
     console.error("Error in /chat endpoint:", err);
     res.status(500).send("Error connecting to OpenAI API");
@@ -87,6 +145,5 @@ app.post("/stt", upload.single("audio"), async (req, res) => {
   }
 });
 
-// -------------------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
