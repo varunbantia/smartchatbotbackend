@@ -4,108 +4,193 @@ import fetch from "node-fetch";
 import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
+
+// ✅ Firebase + Google Cloud
+import admin from "firebase-admin";
 import speech from "@google-cloud/speech";
 
 dotenv.config();
+
+// ✅ Load service account from .env
+const serviceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+
+// ✅ Firebase Admin SDK
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+const db = admin.firestore();
+
+// ✅ Google Cloud Speech client
+const client = new speech.SpeechClient({ credentials: serviceAccount });
+
 const app = express();
 app.use(bodyParser.json());
-
-// Google Cloud STT client
-const client = new speech.SpeechClient();
-
-// Multer setup for audio upload
 const upload = multer({ dest: "uploads/" });
 
-/**
- * Chat endpoint (text message → bot reply)
- */
+/* ===========================================================
+   🔹 1. JOBS HELPER FUNCTION
+=========================================================== */
+async function getJobsFromDatabase({ location, keyword }) {
+  console.log(`Querying Firestore for jobs. Location: ${location}, Keyword: ${keyword}`);
+  try {
+    let query = db.collection("jobs");
+
+    if (location) {
+      query = query.where("location", "==", location);
+    }
+
+    if (keyword) {
+      const keywords = keyword.toLowerCase().split(/, |,/);
+      query = query.where("requiredSkills", "array-contains-any", keywords);
+    }
+
+    const snapshot = await query.get();
+    if (snapshot.empty) {
+      return JSON.stringify([]);
+    }
+
+    const jobs = [];
+    snapshot.forEach(doc => {
+      jobs.push({ id: doc.id, ...doc.data() });
+    });
+
+    return JSON.stringify(jobs);
+  } catch (error) {
+    console.error("Error fetching from Firestore:", error);
+    return JSON.stringify({ error: "Failed to fetch jobs." });
+  }
+}
+
+/* ===========================================================
+   🔹 2. LLM TOOLS
+=========================================================== */
+const tools = [
+  {
+    type: "function",
+    function: {
+      name: "get_jobs",
+      description: "Get a list of available jobs from Firestore based on location and skills/keywords.",
+      parameters: {
+        type: "object",
+        properties: {
+          location: { type: "string", description: "City for job search" },
+          keyword: { type: "string", description: "Keyword or comma-separated list of skills" },
+        },
+        required: [],
+      },
+    },
+  }
+];
+
+/* ===========================================================
+   🔹 3. CHAT ENDPOINT
+=========================================================== */
 app.post("/chat", async (req, res) => {
-  const { message } = req.body;
-  if (!message) {
-    return res.status(400).json({ error: "Message content is missing." });
+  const { history, userProfile } = req.body;
+
+  let systemPrompt =
+    "You are a helpful assistant for the Punjab Ghar Ghar Rozgar and Karobar Mission (PGRKAM) platform. Help with job searches, skill development, and counseling.";
+
+  if (userProfile && userProfile.skills) {
+    systemPrompt += ` The user has skills in: ${userProfile.skills}. Use them for personalized job recommendations.`;
   }
 
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history
+  ];
+
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    // 🔹 First OpenAI call
+    const initialResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
         model: "gpt-3.5-turbo",
-        messages: [{ role: "user", content: message }],
+        messages,
+        tools,
+        tool_choice: "auto",
       }),
     });
 
-    const data = await response.json();
+    const data = await initialResponse.json();
+    const message = data.choices[0].message;
 
-    if (data.choices && data.choices.length > 0) {
-      res.json({ reply: data.choices[0].message.content });
+    if (message.tool_calls) {
+      const toolCall = message.tool_calls[0];
+      const functionName = toolCall.function.name;
+      const functionArgs = JSON.parse(toolCall.function.arguments);
+
+      // 🔹 Call our Firestore function
+      const functionResult = await getJobsFromDatabase(functionArgs);
+
+      const secondApiMessages = [
+        ...messages,
+        message,
+        { tool_call_id: toolCall.id, role: "tool", name: functionName, content: functionResult }
+      ];
+
+      // 🔹 Second OpenAI call with results
+      const finalResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: "gpt-3.5-turbo",
+          messages: secondApiMessages
+        }),
+      });
+
+      const finalData = await finalResponse.json();
+      res.json({ reply: finalData.choices[0].message.content });
     } else {
-      res.status(500).json({ error: "Failed to get a valid response from OpenAI." });
+      res.json({ reply: message.content });
     }
   } catch (err) {
-    console.error("Error connecting to OpenAI API:", err);
+    console.error("Error in /chat endpoint:", err);
     res.status(500).send("Error connecting to OpenAI API");
   }
 });
 
-/**
- * Speech-to-Text endpoint (audio → text + detected language)
- */
+/* ===========================================================
+   🔹 4. SPEECH-TO-TEXT ENDPOINT
+=========================================================== */
 app.post("/stt", upload.single("audio"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "Audio file is missing." });
-  }
-
   try {
-    const file = fs.readFileSync(req.file.path);
-    const audioBytes = file.toString("base64");
+    const filePath = req.file.path;
+    const fileBytes = fs.readFileSync(filePath);
+
+    const audio = { content: fileBytes.toString("base64") };
 
     const config = {
-      // ✅ CORRECTED CONFIGURATION for .3gp files from Android's MediaRecorder
-      encoding: "AMR",
-      sampleRateHertz: 8000,
-      languageCode: "en-IN", // Set your primary language
-      alternativeLanguageCodes: ["hi-IN", "pa-IN"], // Hindi and Punjabi as alternatives
+      encoding: "LINEAR16",   // ⚠️ match with Android recording format
+      sampleRateHertz: 16000, // ⚠️ match recorder sample rate
+      languageCode: "en-US",
     };
 
-    const audio = {
-      content: audioBytes,
-    };
-
-    const request = {
-      audio: audio,
-      config: config,
-    };
+    const request = { audio, config };
 
     const [response] = await client.recognize(request);
+    const transcription = response.results
+      .map(result => result.alternatives[0].transcript)
+      .join("\n");
 
-    // Cleanup the temporary file immediately after reading
-    fs.unlinkSync(req.file.path); 
+    fs.unlinkSync(filePath); // cleanup
 
-    if (!response.results || response.results.length === 0) {
-      return res.json({ text: "", language: "unknown" });
-    }
-
-    const result = response.results[0];
-    const transcription = result.alternatives[0].transcript;
-    const detectedLanguage = result.languageCode || "en-IN";
-
-    res.json({
-      text: transcription,
-      language: detectedLanguage,
-    });
-  } catch (err) {
-    console.error("STT Error:", err);
-    // Ensure file is deleted even if an error occurs
-    if (req.file && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-    }
-    res.status(500).send("Error transcribing audio");
+    res.json({ transcript: transcription });
+  } catch (error) {
+    console.error("STT error:", error);
+    res.status(500).json({ error: "Transcription failed" });
   }
 });
 
+/* ===========================================================
+   🔹 5. START SERVER
+=========================================================== */
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
