@@ -4,52 +4,28 @@ import fetch from "node-fetch";
 import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
-
-// ✅ Google Cloud Speech (optional)
 import speech from "@google-cloud/speech";
 
 dotenv.config();
-
 const app = express();
 app.use(bodyParser.json());
+
+// Google Cloud STT client
+const client = new speech.SpeechClient();
+
+// Multer setup for audio upload
 const upload = multer({ dest: "uploads/" });
 
-// Initialize Google Speech Client
-const client = new speech.SpeechClient({
-  credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON),
-});
-
-// -------------------------
-// Example Tools / Function Calls
-// -------------------------
-// You can add more tools here later
-const tools = [
-  {
-    type: "function",
-    function: {
-      name: "get_time",
-      description: "Returns the current server time",
-      parameters: { type: "object", properties: {}, required: [] },
-    },
-  },
-];
-
-// -------------------------
-// Chat endpoint with function support
-// -------------------------
+/**
+ * Chat endpoint (text message → bot reply)
+ */
 app.post("/chat", async (req, res) => {
-  const { history } = req.body;
-
-  const systemPrompt =
-    "You are a helpful and friendly AI chatbot. Assist the user in a conversational manner. You can also call functions if needed.";
-
-  const messages = [
-    { role: "system", content: systemPrompt },
-    ...(Array.isArray(history) ? history : []),
-  ];
+  const { message } = req.body;
+  if (!message) {
+    return res.status(400).json({ error: "Message content is missing." });
+  }
 
   try {
-    // Initial OpenAI request
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -58,90 +34,76 @@ app.post("/chat", async (req, res) => {
       },
       body: JSON.stringify({
         model: "gpt-3.5-turbo",
-        messages,
-        tools,          // Pass the tools here
-        tool_choice: "auto",
+        messages: [{ role: "user", content: message }],
       }),
     });
 
     const data = await response.json();
-    const message = data.choices[0].message;
 
-    // Check if the model wants to call a function
-    if (message.tool_calls && message.tool_calls.length > 0) {
-      const toolCall = message.tool_calls[0];
-      const functionName = toolCall.function.name;
-      const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
-
-      // Handle tool calls (add more actions here)
-      let functionResult;
-      if (functionName === "get_time") {
-        functionResult = { time: new Date().toISOString() };
-      } else {
-        functionResult = { error: "Function not implemented yet." };
-      }
-
-      // Add tool call result to conversation
-      const secondApiMessages = [
-        ...messages,
-        message,
-        {
-          tool_call_id: toolCall.id,
-          role: "tool",
-          name: functionName,
-          content: JSON.stringify(functionResult),
-        },
-      ];
-
-      const finalResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({ model: "gpt-3.5-turbo", messages: secondApiMessages }),
-      });
-
-      const finalData = await finalResponse.json();
-      res.json({ reply: finalData.choices[0].message.content });
+    if (data.choices && data.choices.length > 0) {
+      res.json({ reply: data.choices[0].message.content });
     } else {
-      // Normal chat response
-      res.json({ reply: message.content });
+      res.status(500).json({ error: "Failed to get a valid response from OpenAI." });
     }
   } catch (err) {
-    console.error("Error in /chat endpoint:", err);
+    console.error("Error connecting to OpenAI API:", err);
     res.status(500).send("Error connecting to OpenAI API");
   }
 });
 
-// -------------------------
-// Speech-to-text endpoint (optional)
-// -------------------------
+/**
+ * Speech-to-Text endpoint (audio → text + detected language)
+ */
 app.post("/stt", upload.single("audio"), async (req, res) => {
-  if (!req.file) return res.status(400).send("No audio file uploaded");
+  if (!req.file) {
+    return res.status(400).json({ error: "Audio file is missing." });
+  }
 
   try {
-    const audioBytes = fs.readFileSync(req.file.path).toString("base64");
+    const file = fs.readFileSync(req.file.path);
+    const audioBytes = file.toString("base64");
 
-    const [response] = await client.recognize({
-      config: {
-        encoding: "LINEAR16",
-        sampleRateHertz: 16000,
-        languageCode: "en-US",
-      },
-      audio: { content: audioBytes },
+    const config = {
+      // ✅ CORRECTED CONFIGURATION for .3gp files from Android's MediaRecorder
+      encoding: "AMR",
+      sampleRateHertz: 8000,
+      languageCode: "en-IN", // Set your primary language
+      alternativeLanguageCodes: ["hi-IN", "pa-IN"], // Hindi and Punjabi as alternatives
+    };
+
+    const audio = {
+      content: audioBytes,
+    };
+
+    const request = {
+      audio: audio,
+      config: config,
+    };
+
+    const [response] = await client.recognize(request);
+
+    // Cleanup the temporary file immediately after reading
+    fs.unlinkSync(req.file.path); 
+
+    if (!response.results || response.results.length === 0) {
+      return res.json({ text: "", language: "unknown" });
+    }
+
+    const result = response.results[0];
+    const transcription = result.alternatives[0].transcript;
+    const detectedLanguage = result.languageCode || "en-IN";
+
+    res.json({
+      text: transcription,
+      language: detectedLanguage,
     });
-
-    const transcript = response.results
-      .map((r) => r.alternatives[0].transcript)
-      .join("\n");
-
-    res.json({ transcript });
   } catch (err) {
-    console.error("Error in /stt endpoint:", err);
-    res.status(500).send("STT processing failed");
-  } finally {
-    fs.unlink(req.file.path, () => {});
+    console.error("STT Error:", err);
+    // Ensure file is deleted even if an error occurs
+    if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+    }
+    res.status(500).send("Error transcribing audio");
   }
 });
 
