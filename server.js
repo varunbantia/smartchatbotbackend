@@ -264,6 +264,10 @@ app.post("/chat", async (req, res) => {
       });
 
       const finalData = await finalResponse.json();
+      if (!finalData.choices || finalData.choices.length === 0) {
+                console.error("❌ OpenAI Error on SECOND call (after tool use):", JSON.stringify(finalData, null, 2));
+                throw new Error("Invalid response from OpenAI on the second call.");
+          }
       res.json({ reply: finalData.choices[0].message.content });
     } else {
       res.json({ reply: firstResponseMsg.content });
@@ -272,10 +276,7 @@ app.post("/chat", async (req, res) => {
     console.error("Error in /chat endpoint:", err);
     res.status(500).json({ error: "An error occurred while processing your request." });
   }
-  if (!finalData.choices || finalData.choices.length === 0) {
-                console.error("❌ OpenAI Error on SECOND call (after tool use):", JSON.stringify(finalData, null, 2));
-                throw new Error("Invalid response from OpenAI on the second call.");
-          }
+  
 });
 
 // =================================================================
