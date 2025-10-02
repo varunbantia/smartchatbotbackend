@@ -18,20 +18,34 @@ const app = express();
 app.use(bodyParser.json());
 const upload = multer({ dest: "uploads/" });
 const AI_MODEL = "gpt-3.5-turbo";
+
 let sttClient;
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+
+// ✅ Parse Firebase credentials from ENV
+const firebaseServiceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+
+// ✅ Parse Google STT credentials from ENV
+const googleServiceAccount = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
 
 try {
+  // Firebase Initialization
   admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    projectId: "smartchatbot-24e6b",
+    credential: admin.credential.cert(firebaseServiceAccount),
+    projectId: firebaseServiceAccount.project_id,
   });
   console.log("✅ Firebase Admin initialized successfully.");
 
-  sttClient = new speech.SpeechClient();
+  // Google Cloud STT Initialization
+  sttClient = new speech.SpeechClient({
+    credentials: {
+      client_email: googleServiceAccount.client_email,
+      private_key: googleServiceAccount.private_key,
+    },
+    projectId: googleServiceAccount.project_id,
+  });
   console.log("✅ Google Speech-to-Text client initialized successfully.");
 } catch (err) {
-  console.error("🔥 Google Cloud initialization failed:", err);
+  console.error("🔥 Initialization failed:", err);
   process.exit(1);
 }
 
@@ -282,3 +296,4 @@ app.post("/chat", async (req, res) => {
 // =================================================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
