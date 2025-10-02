@@ -156,6 +156,8 @@ app.post("/stt", upload.single("audio"), async (req, res) => {
 
 
 // --- Chat Endpoint (Now with Personalization, Tools, and Language Support) ---
+// In server.js, replace the entire app.post("/chat", ...) with this:
+
 app.post("/chat", async (req, res) => {
     const { message, history, uid, language } = req.body;
 
@@ -163,14 +165,12 @@ app.post("/chat", async (req, res) => {
     if (!uid) return res.status(400).json({ error: "User ID (uid) is missing for personalization." });
 
     try {
-        // 1. Fetch user preferences for personalization
         const userPrefs = await fetchUserPreferences(uid);
         let personalizationContext = "";
         if (userPrefs) {
             personalizationContext = `For personalization, here is the current user's profile: Name is ${userPrefs.name}, their skills are ${userPrefs.skills}, and their preferred location is ${userPrefs.location}. Use this information to provide better recommendations.`;
         }
 
-        // 2. Create a dynamic system prompt
         const languageInstruction = `Respond in ${language || 'English'}.`;
         const systemPrompt = `You are RozgarAI, a helpful and friendly AI assistant for the PGRKAM digital platform. Your goal is to assist users with job searches, skill development, and foreign counseling. ${personalizationContext} ${languageInstruction}`;
         
@@ -180,7 +180,6 @@ app.post("/chat", async (req, res) => {
             { role: "user", content: message },
         ];
         
-        // 3. First call to OpenAI to see if it wants to use a tool
         const response = await fetch("https://api.openai.com/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -191,11 +190,17 @@ app.post("/chat", async (req, res) => {
         });
 
         const data = await response.json();
-        if (!data.choices || data.choices.length === 0) throw new Error("Invalid response from OpenAI.");
+
+        // ✅ --- THIS IS THE IMPROVED ERROR CHECK ---
+        if (!data.choices || data.choices.length === 0) {
+            // If OpenAI didn't send a valid choice, it's an error. Log the full response.
+            console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
+            throw new Error("Invalid response from OpenAI. Check server logs for details.");
+        }
+        // ✅ --- END OF CHANGE ---
 
         const firstResponseMsg = data.choices[0].message;
 
-        // 4. Check if the model wants to call a function
         if (firstResponseMsg.tool_calls) {
             const toolCall = firstResponseMsg.tool_calls[0];
             const functionName = toolCall.function.name;
@@ -203,7 +208,6 @@ app.post("/chat", async (req, res) => {
             
             let toolResult;
             
-            // Execute the correct function
             switch(functionName) {
                 case 'find_jobs':
                     toolResult = findJobs(functionArgs);
@@ -215,7 +219,6 @@ app.post("/chat", async (req, res) => {
                     toolResult = { error: "Function not implemented." };
             }
 
-            // 5. Second call to OpenAI with the function result
             const finalMessages = [...messages, firstResponseMsg, {
                 tool_call_id: toolCall.id,
                 role: "tool",
@@ -233,7 +236,6 @@ app.post("/chat", async (req, res) => {
             res.json({ reply: finalData.choices[0].message.content });
 
         } else {
-            // If no function call, just return the direct reply
             res.json({ reply: firstResponseMsg.content });
         }
 
