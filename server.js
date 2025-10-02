@@ -19,10 +19,11 @@ app.use(bodyParser.json());
 const upload = multer({ dest: "uploads/" });
 const AI_MODEL = "gpt-3.5-turbo";
 let sttClient;
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
 
 try {
   admin.initializeApp({
-    credential: admin.credential.applicationDefault(),
+    credential: admin.credential.cert(serviceAccount),
     projectId: "smartchatbot-24e6b",
   });
   console.log("✅ Firebase Admin initialized successfully.");
