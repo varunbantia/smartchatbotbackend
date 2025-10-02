@@ -26,7 +26,7 @@ try {
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    projectId: serviceAccount.project_id,
+    projectId: 'smartchatbot-24e6b',
   });
 
   // ✅ Explicitly configure Firestore to use these credentials
@@ -266,4 +266,3 @@ app.post("/chat", async (req, res) => {
 // =================================================================
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
