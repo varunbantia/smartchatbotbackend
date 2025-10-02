@@ -23,6 +23,7 @@ const AI_MODEL = "gpt-3.5-turbo";
 try {
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
+    projectId: 'smartchatbot-24e6b', 
   });
   console.log("✅ Firebase Admin initialized successfully.");
 } catch (err) {
