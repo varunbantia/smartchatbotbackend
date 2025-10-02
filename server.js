@@ -102,6 +102,7 @@ const findJobs = (params) => {
   return filteredJobs.length > 0 ? filteredJobs : "No jobs found matching those criteria.";
 };
 
+
 // =================================================================
 // 3. AI TOOLS (FUNCTION CALLING) DEFINITION
 // =================================================================
@@ -271,6 +272,10 @@ app.post("/chat", async (req, res) => {
     console.error("Error in /chat endpoint:", err);
     res.status(500).json({ error: "An error occurred while processing your request." });
   }
+  if (!finalData.choices || finalData.choices.length === 0) {
+                console.error("❌ OpenAI Error on SECOND call (after tool use):", JSON.stringify(finalData, null, 2));
+                throw new Error("Invalid response from OpenAI on the second call.");
+          }
 });
 
 // =================================================================
