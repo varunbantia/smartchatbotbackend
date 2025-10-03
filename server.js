@@ -189,6 +189,42 @@ app.post("/stt", upload.single("audio"), async (req, res) => {
   }
 });
 
+app.get("/jobs", async (req, res) => {
+    const { uid, query } = req.query;
+
+    if (!uid) {
+        return res.status(400).json({ error: "User ID (uid) is required." });
+    }
+
+    try {
+        let searchParams = {};
+
+        // If a search query is provided, use it.
+        // Otherwise, use the user's profile for a personalized feed.
+        if (query) {
+            searchParams = { skills: query, location: '' };
+        } else {
+            const userPrefs = await fetchUserPreferences(uid);
+            if (userPrefs) {
+                searchParams = {
+                    skills: userPrefs.skills || 'developer',
+                    location: userPrefs.location || 'India'
+                };
+            } else {
+                 searchParams = { skills: 'jobs', location: 'India' };
+            }
+        }
+        
+        // Call the same findJobs function our chatbot uses
+        const jobsResult = await findJobs(searchParams);
+        res.json(jobsResult);
+
+    } catch (err) {
+        console.error("Error in /jobs endpoint:", err);
+        res.status(500).json({ error: "An error occurred while fetching jobs." });
+    }
+});
+
 /**
  * Chat endpoint
  */
