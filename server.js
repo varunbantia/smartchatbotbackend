@@ -13,7 +13,7 @@ dotenv.config();
 // =================================================================
 // 1. CONFIGURATION & INITIALIZATION
 // =================================================================
-const db = admin.firestore();
+
 const app = express();
 app.use(bodyParser.json());
 const upload = multer({ dest: "uploads/" });
@@ -52,7 +52,7 @@ try {
   console.error("🔥 Initialization failed:", err);
   process.exit(1);
 }
-
+const db = admin.firestore();
 const fetchUserPreferences = async (uid) => {
   if (!uid) return null;
   try {
