@@ -13,7 +13,7 @@ dotenv.config();
 // =================================================================
 // 1. CONFIGURATION & INITIALIZATION
 // =================================================================
-
+const db = admin.firestore();
 const app = express();
 app.use(bodyParser.json());
 const upload = multer({ dest: "uploads/" });
