@@ -71,9 +71,20 @@ const fetchUserPreferences = async (uid) => {
 
 const findJobs = async (params) => {
     try {
-        const { query, employment_types } = params;
+        // --- FIX START ---
+        // 1. Destructure the CORRECT parameters sent by the AI: 'skills' and 'location'.
+        const { skills, location, employment_types } = params;
+
+        // 2. Combine them into a single search query.
+        //    Provide defaults in case the AI doesn't send one of them.
+        const searchQuery = `${skills || 'jobs'} in ${location || 'India'}`;
+        // --- FIX END ---
+
         const url = new URL("https://jsearch.p.rapidapi.com/search");
-        url.searchParams.append("query", query);
+
+        // 3. Use the new 'searchQuery' variable for the API call.
+        url.searchParams.append("query", searchQuery);
+
         if (employment_types) {
             url.searchParams.append("employment_types", employment_types.toUpperCase());
         }
@@ -104,6 +115,8 @@ const findJobs = async (params) => {
         return [];
     }
 };
+
+       
 
 // 3. AI TOOLS
 
