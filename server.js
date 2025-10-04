@@ -274,13 +274,26 @@ app.post("/chat", async (req, res) => {
         },
       ];
 
-      const finalResponse = await fetch(
-        "https://api.openai.com/v1/chat/completions",
-        {
-          /* ... */
-        }
-      );
-      const finalData = await finalResponse.json();
+    const finalResponse = await fetch(
+    "https://api.openai.com/v1/chat/completions",
+    {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        // The body sends the full conversation history PLUS the tool result
+        body: JSON.stringify({
+            model: AI_MODEL,
+            messages: finalMessages, 
+        }),
+    }
+);
+const finalData = await finalResponse.json();
+if (!finalData.choices || finalData.choices.length === 0) {
+                console.error("❌ OpenAI Error on SECOND call (after tool use):", JSON.stringify(finalData, null, 2));
+                throw new Error("Invalid response from OpenAI on the second call.");
+            }
       res.json({ reply: finalData.choices[0].message.content });
     } else {
       res.json({ reply: firstResponseMsg.content });
