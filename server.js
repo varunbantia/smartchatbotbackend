@@ -69,21 +69,17 @@ const fetchUserPreferences = async (uid) => {
     }
 };
 
+// In your index.js
+
 const findJobs = async (params) => {
     try {
-        // --- FIX START ---
-        // 1. Destructure the CORRECT parameters sent by the AI: 'skills' and 'location'.
-        const { skills, location, employment_types } = params;
-
-        // 2. Combine them into a single search query.
-        //    Provide defaults in case the AI doesn't send one of them.
-        const searchQuery = `${skills || 'jobs'} in ${location || 'India'}`;
-        // --- FIX END ---
-
+        // MODIFICATION: The function now only needs 'query' and 'employment_types'
+        const { query, employment_types } = params; 
+        
         const url = new URL("https://jsearch.p.rapidapi.com/search");
 
-        // 3. Use the new 'searchQuery' variable for the API call.
-        url.searchParams.append("query", searchQuery);
+        // The query is now passed directly, no need to build it here.
+        url.searchParams.append("query", query); 
 
         if (employment_types) {
             url.searchParams.append("employment_types", employment_types.toUpperCase());
@@ -115,8 +111,6 @@ const findJobs = async (params) => {
         return [];
     }
 };
-
-       
 
 // 3. AI TOOLS
 
@@ -264,7 +258,17 @@ app.post("/chat", async (req, res) => {
             let toolResult;
             
             if (functionName === 'find_jobs') {
-                toolResult = await findJobs(functionArgs);
+                // ================= FIX START =================
+                // 1. Get skills and location from the AI's arguments.
+                const { skills, location } = functionArgs;
+
+                // 2. Create the single 'query' string that findJobs expects.
+                const searchQuery = `${skills || 'jobs'}${location ? ` in ${location}` : ''}`;
+                
+                // 3. Call findJobs with the correctly structured object.
+                toolResult = await findJobs({ query: searchQuery });
+                // ================= FIX END ===================
+
             } else if (functionName === 'get_user_info') {
                 toolResult = await fetchUserPreferences(uid);
             } else {
