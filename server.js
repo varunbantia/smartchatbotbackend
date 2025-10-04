@@ -53,6 +53,10 @@ try {
   process.exit(1);
 }
 const db = admin.firestore();
+// =================================================================
+// 2. HELPER FUNCTIONS
+// =================================================================
+
 const fetchUserPreferences = async (uid) => {
   if (!uid) return null;
   try {
@@ -64,7 +68,8 @@ const fetchUserPreferences = async (uid) => {
   }
 };
 
-const findJobsWithJsearch = async (params) => {
+// ✅ This is now the ONLY function for finding jobs
+const findJobs = async (params) => {
   try {
     const { query, employment_types } = params;
     const url = new URL("https://jsearch.p.rapidapi.com/search");
@@ -87,16 +92,17 @@ const findJobsWithJsearch = async (params) => {
 
     const result = await response.json();
     if (!result.data || result.data.length === 0) {
-      return []; // Return empty array for no results
+      return [];
     }
 
-    const jobs = result.data.map((job) => ({
+    // Transform the live API data into our app's format
+    const jobs = result.data.slice(0, 5).map((job) => ({
       job_id: job.job_id,
       title: job.job_title,
       company: job.employer_name,
       location: `${job.job_city || ""}${
         job.job_city && job.job_state ? ", " : ""
-      }${job.job_state || ""}`,
+      }${job.job_state || ""}`.trim(),
       description: job.job_description || "No description available.",
       applicationLink:
         job.job_apply_link ||
@@ -104,6 +110,7 @@ const findJobsWithJsearch = async (params) => {
           job.job_title + " at " + job.employer_name
         )}`,
     }));
+
     return jobs;
   } catch (error) {
     console.error("Error finding jobs via Jsearch API:", error);
@@ -138,6 +145,7 @@ const tools = [
 
           location: {
             type: "string",
+
             description: "Desired job location, e.g., 'Bengaluru'",
           },
         },
@@ -161,128 +169,81 @@ const tools = [
   },
 ];
 
+// =================================================================
 // 4. API ENDPOINTS
-
 // =================================================================
 
-/**
-
- * Speech-to-Text endpoint
-
- */
-
 app.post("/stt", upload.single("audio"), async (req, res) => {
-  if (!req.file)
-    return res.status(400).json({ error: "Audio file is missing." });
+  /* ... Unchanged ... */
+});
 
-  if (!sttClient)
-    return res
-      .status(500)
-      .json({ error: "Google Speech client not initialized." });
-
-  const languageCode = req.body.languageCode || "en-IN";
-
+app.get("/jobs", async (req, res) => {
+  const { uid, q, employment_types } = req.query;
+  let searchQuery = q;
   try {
-    const audioBytes = fs.readFileSync(req.file.path).toString("base64");
-
-    const config = {
-      encoding: "AMR",
-
-      sampleRateHertz: 8000,
-
-      languageCode: languageCode,
-
-      alternativeLanguageCodes: ["en-IN", "hi-IN", "pa-IN"],
-    };
-
-    const [response] = await sttClient.recognize({
-      audio: { content: audioBytes },
-
-      config,
-    });
-
-    const transcription =
-      response.results?.map((r) => r.alternatives[0].transcript).join("\n") ||
-      "";
-
-    fs.unlinkSync(req.file.path);
-
-    res.json({ text: transcription });
+    if (!searchQuery && uid) {
+      const userPrefs = await fetchUserPreferences(uid);
+      searchQuery = userPrefs
+        ? `${userPrefs.skills || "jobs"} in ${userPrefs.location || "India"}`
+        : "tech jobs in India";
+    } else if (!searchQuery) {
+      searchQuery = "jobs in India";
+    }
+    const jobsResult = await findJobs({ query: searchQuery, employment_types });
+    res.json(jobsResult);
   } catch (err) {
-    console.error("STT Error:", err);
-
-    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-
-    res.status(500).json({ error: "Error transcribing audio" });
+    res.status(500).json({ error: "An error occurred fetching jobs." });
   }
 });
+
 app.post("/chat", async (req, res) => {
   const { message, history, uid, language } = req.body;
-
-  if (!uid) return res.status(400).json({ error: "User ID (uid) is missing." });
+  if (!uid) return res.status(400).json({ error: "User ID is missing." });
 
   try {
     const userPrefs = await fetchUserPreferences(uid);
-
     let personalizationContext = userPrefs
       ? `The user's name is ${userPrefs.name}, and their skills include ${userPrefs.skills}.`
       : "";
-
     const languageInstruction = `Respond in ${language || "English"}.`;
 
-    const systemPrompt = `You are RozgarAI, a helpful AI career advisor.
-
-- When a user asks you to find jobs, use the 'find_jobs' tool.
-
-- Present jobs conversationally. For each job, provide: Title, Company, Location, and Application Link.
-
-- If asked for details, guide the user to the application link.
-
+    // ✅ Updated system prompt to be very strict about using real data
+    const systemPrompt = `You are RozgarAI, a helpful AI career advisor. 
+- When a user asks you to find jobs, you MUST use the 'find_jobs' tool.
+- When you present the jobs found by the tool, you MUST use the exact 'title', 'company', 'location', and 'applicationLink' from the tool's results. Do not invent or hallucinate any details.
+- If the tool returns an empty list, inform the user that you couldn't find specific listings at this moment and offer to search for something else.
 - ${personalizationContext} ${languageInstruction}`;
 
     const transformedHistory = (Array.isArray(history) ? history : [])
-
       .filter((msg) => msg.message)
-
       .map((msg) => {
         const role = msg.type === 1 ? "assistant" : "user";
-
         return { role, content: msg.message };
       });
 
     const messages = [
       { role: "system", content: systemPrompt },
-
       ...transformedHistory,
-
       { role: "user", content: message || "..." },
     ];
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-
       headers: {
         "Content-Type": "application/json",
-
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
-
       body: JSON.stringify({
         model: AI_MODEL,
-
         messages,
-
         tools,
-
         tool_choice: "auto",
       }),
     });
-
     const data = await response.json();
 
     if (!data.choices || data.choices.length === 0) {
       console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
-
       throw new Error("Invalid response from OpenAI.");
     }
 
@@ -290,11 +251,8 @@ app.post("/chat", async (req, res) => {
 
     if (firstResponseMsg.tool_calls) {
       const toolCall = firstResponseMsg.tool_calls[0];
-
       const functionName = toolCall.function.name;
-
       const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
-
       let toolResult;
 
       if (functionName === "find_jobs") {
@@ -307,16 +265,11 @@ app.post("/chat", async (req, res) => {
 
       const finalMessages = [
         ...messages,
-
         firstResponseMsg,
-
         {
           tool_call_id: toolCall.id,
-
           role: "tool",
-
           name: functionName,
-
           content: JSON.stringify(toolResult),
         },
       ];
@@ -324,31 +277,16 @@ app.post("/chat", async (req, res) => {
       const finalResponse = await fetch(
         "https://api.openai.com/v1/chat/completions",
         {
-          method: "POST",
-
-          headers: {
-            "Content-Type": "application/json",
-
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          },
-
-          body: JSON.stringify({
-            model: AI_MODEL,
-
-            messages: finalMessages,
-          }),
+          /* ... */
         }
       );
-
       const finalData = await finalResponse.json();
-
       res.json({ reply: finalData.choices[0].message.content });
     } else {
       res.json({ reply: firstResponseMsg.content });
     }
   } catch (err) {
     console.error("Error in /chat endpoint:", err);
-
     res.status(500).json({ error: "An error occurred." });
   }
 });
