@@ -301,6 +301,65 @@ app.post("/chat", async (req, res) => {
     }
 });
 
+
+// ✅ --- NEW ENDPOINT FOR LIVE SKILL ANALYSIS ---
+app.get("/skills/analyze", async (req, res) => {
+    const { uid } = req.query;
+    if (!uid) return res.status(400).json({ error: "User ID is required." });
+
+    try {
+        // 1. Get user's profile (skills and job role)
+        const userPrefs = await fetchUserPreferences(uid);
+        if (!userPrefs || !userPrefs.jobRole) {
+            return res.status(404).json({ error: "User profile or job role not found." });
+        }
+        
+        const userSkills = (userPrefs.skills || "").toLowerCase().split(',').map(s => s.trim());
+        const jobRole = userPrefs.jobRole;
+
+        // 2. Ask OpenAI for the required skills for that job role
+        const skillsQuestion = `List the top 8 most important technical skills for a '${jobRole}'. Respond ONLY with a comma-separated list (e.g., skill1,skill2,skill3).`;
+        const skillsResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+            body: JSON.stringify({ model: "gpt-3.5-turbo", messages: [{ role: "user", content: skillsQuestion }] }),
+        });
+        const skillsData = await skillsResponse.json();
+        const requiredSkillsText = skillsData.choices[0].message.content;
+        const requiredSkills = requiredSkillsText.toLowerCase().split(',').map(s => s.trim());
+
+        // 3. Compare to find the skill gap
+        const missingSkills = requiredSkills.filter(skill => !userSkills.includes(skill));
+
+        // 4. Ask OpenAI for learning resources for each missing skill
+        const learningResources = {};
+        for (const skill of missingSkills) {
+            const resourceQuestion = `Provide one high-quality, public URL for a tutorial or course to learn '${skill}'. Respond ONLY with the URL.`;
+            const resourceResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+                body: JSON.stringify({ model: "gpt-3.5-turbo", messages: [{ role: "user", content: resourceQuestion }] }),
+            });
+            const resourceData = await resourceResponse.json();
+            const url = resourceData.choices[0].message.content.trim();
+            if (url.startsWith("http")) {
+                learningResources[skill] = url;
+            }
+        }
+        
+        // 5. Send the complete analysis back to the app
+        res.json({
+            jobRole: jobRole,
+            requiredSkills: requiredSkills,
+            missingSkills: missingSkills,
+            learningResources: learningResources,
+        });
+
+    } catch (err) {
+        console.error("Error in /skills/analyze endpoint:", err);
+        res.status(500).json({ error: "An error occurred during skill analysis." });
+    }
+});
 app.get("/jobs", async (req, res) => {
     const { uid, q, employment_types } = req.query;
     let searchQuery = q;
