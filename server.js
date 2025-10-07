@@ -94,18 +94,19 @@ const findJobs = async (params) => {
     const result = await response.json();
     if (!result.data || result.data.length === 0) return [];
 
-    return result.data.slice(0, 5).map((job) => ({
+    const jobs=result.data.slice(0, 5).map((job) => ({
       job_id: job.job_id,
       title: job.job_title,
       company: job.employer_name,
-      location: `${job.job_city || ""}${job.job_city && job.job_state ? ", " : ""}${job.job_state || ""}`.trim(),
-      description: job.job_description || "No description available.",
+      location: `${job.job_city || ''}${job.job_city && job.job_state ? ','  : ''}${job.job_state || ''}`.trim(),
+      description: job.job_description || 'No description available.',
       applicationLink:
         job.job_apply_link ||
         `https://www.google.com/search?q=${encodeURIComponent(
-          job.job_title + " at " + job.employer_name
+          job.job_title +  'at' + job.employer_name
         )}`,
     }));
+    return jobs;
   } catch (error) {
     console.error("Error finding jobs via Jsearch API:", error);
     return [];
@@ -119,25 +120,44 @@ const findJobs = async (params) => {
 const tools = [
   {
     type: "function",
+
     function: {
       name: "find_jobs",
+
       description:
-        "Searches for real, live job listings based on skills or location.",
+        "Searches for real, live job listings from an external database based on criteria like skills or location.",
+
       parameters: {
         type: "object",
+
         properties: {
-          skills: { type: "string", description: "Job title or skill, e.g., 'Python developer'" },
-          location: { type: "string", description: "Desired job location, e.g., 'Bengaluru'" },
+          skills: {
+            type: "string",
+
+            description:
+              "Job title or skills to search for, e.g., 'Python developer'",
+          },
+
+          location: {
+            type: "string",
+
+            description: "Desired job location, e.g., 'Bengaluru'",
+          },
         },
+
         required: [],
       },
     },
   },
   {
     type: "function",
+
     function: {
       name: "get_user_info",
-      description: "Retrieves current user profile information from Firestore.",
+
+      description:
+        "Retrieves the current user's profile information from Firestore.",
+
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -203,6 +223,8 @@ app.post("/chat", async (req, res) => {
     const systemPrompt = `You are RozgarAI, a helpful AI career advisor.
 You MUST use the 'find_jobs' tool for job-related questions.
 Always respond in ${detectedLanguage}.
+When presenting jobs, you MUST use the exact data from the tool.
+Guide users to the application link for more information. ${personalizationContext}
 Do not invent job data; use exact data returned by the tool.
 ${personalizationContext}`;
 
@@ -226,8 +248,10 @@ ${personalizationContext}`;
     });
 
     const data = await response.json();
-    if (!data.choices?.length) throw new Error("Invalid OpenAI response.");
-
+    if (!data.choices || data.choices.length === 0) {
+            console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
+            throw new Error("Invalid response from OpenAI.");
+        }
     const firstResponseMsg = data.choices[0].message;
 
     if (firstResponseMsg.tool_calls) {
@@ -238,7 +262,7 @@ ${personalizationContext}`;
 
       if (functionName === "find_jobs") {
         const { skills, location } = functionArgs;
-        const searchQuery = `${skills || "jobs"}${location ? ` in ${location}` : ""}`;
+        const searchQuery = `${skills || 'jobs'}${location ? ` in ${location}` : ''}`;
         toolResult = await findJobs({ query: searchQuery });
       } else if (functionName === "get_user_info") {
         toolResult = await fetchUserPreferences(uid);
@@ -261,7 +285,11 @@ ${personalizationContext}`;
         body: JSON.stringify({ model: AI_MODEL, messages: finalMessages }),
       });
       const finalData = await finalResponse.json();
-      res.json({ reply: finalData.choices?.[0]?.message?.content || "No response" });
+      if (!finalData.choices || finalData.choices.length === 0) {
+                console.error("❌ OpenAI Error on SECOND call:", JSON.stringify(finalData, null, 2));
+                throw new Error("Invalid response from OpenAI on the second call.");
+            }
+      res.json({ reply: finalData.choices[0].message.content});
     } else {
       res.json({ reply: firstResponseMsg.content });
     }
@@ -284,10 +312,10 @@ app.get("/skills/analyze", async (req, res) => {
       return res.status(404).json({ error: "User profile or job role not found." });
     }
 
-    const userSkills = (userPrefs.skills || "").toLowerCase().split(",").map((s) => s.trim());
+    const userSkills = (userPrefs.skills || "").toLowerCase().split(',').map((s) => s.trim());
     const jobRole = userPrefs.jobRole;
 
-    const skillsQuestion = `List top 8 most important technical skills for a '${jobRole}' as comma-separated values.`;
+        const skillsQuestion = `List the top 8 most important technical skills for a '${jobRole}'. Respond ONLY with a comma-separated list (e.g., skill1,skill2,skill3).`;
     const skillsResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -298,12 +326,12 @@ app.get("/skills/analyze", async (req, res) => {
     });
     const skillsData = await skillsResponse.json();
     const requiredSkillsText = skillsData.choices[0].message.content;
-    const requiredSkills = requiredSkillsText.toLowerCase().split(",").map((s) => s.trim());
-    const missingSkills = requiredSkills.filter((skill) => !userSkills.includes(skill));
+    const requiredSkills = requiredSkillsText.toLowerCase().split(',').map((s) => s.trim());
+    const missingSkills = requiredSkills.filter(skill => !userSkills.includes(skill));
 
     const learningResources = {};
     for (const skill of missingSkills) {
-      const resourceQuestion = `Provide one high-quality, public URL for a tutorial to learn '${skill}'. Respond ONLY with the URL.`;
+            const resourceQuestion = `Provide one high-quality, public URL for a tutorial or course to learn '${skill}'. Respond ONLY with the URL.`;
       const resourceResponse = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -317,8 +345,12 @@ app.get("/skills/analyze", async (req, res) => {
       if (url.startsWith("http")) learningResources[skill] = url;
     }
 
-    res.json({ jobRole, requiredSkills, missingSkills, learningResources });
-  } catch (err) {
+res.json({
+            jobRole: jobRole,
+            requiredSkills: requiredSkills,
+            missingSkills: missingSkills,
+            learningResources: learningResources,
+        });  } catch (err) {
     console.error("Error in /skills/analyze endpoint:", err);
     res.status(500).json({ error: "Skill analysis failed." });
   }
@@ -334,10 +366,10 @@ app.get("/jobs", async (req, res) => {
     if (!searchQuery && uid) {
       const userPrefs = await fetchUserPreferences(uid);
       searchQuery = userPrefs
-        ? `${userPrefs.skills || "jobs"} in ${userPrefs.location || "India"}`
-        : "tech jobs in India";
+        ? `${userPrefs.skills || 'jobs'} in ${userPrefs.location || 'India'}`
+        : 'tech jobs in India';
     } else if (!searchQuery) {
-      searchQuery = "jobs in India";
+      searchQuery = 'jobs in India';
     }
     const jobsResult = await findJobs({ query: searchQuery, employment_types });
     res.json(jobsResult);
