@@ -92,7 +92,29 @@ const findJobs = async (params) => {
     });
 
     const result = await response.json();
-    if (!result.data || result.data.length === 0) return [];
+    if (!result.data || result.data.length === 0) {
+  console.warn("⚠️ No jobs found, returning fallback demo data.");
+  return [
+    {
+      job_id: "demo1",
+      title: "Frontend Developer",
+      company: "Techify Solutions",
+      location: "Bengaluru, India",
+      description: "Work on modern web apps using React and Tailwind CSS.",
+      applicationLink: "https://www.naukri.com/frontend-developer-jobs",
+    },
+    {
+      job_id: "demo2",
+      title: "Backend Engineer",
+      company: "CloudCore Labs",
+      location: "Pune, India",
+      description: "Develop APIs using Node.js and MongoDB.",
+      applicationLink: "https://www.naukri.com/backend-developer-jobs",
+    },
+  ];
+}
+
+console.log("🔍 Querying jobs for:", query, "Type:", employment_types);
 
     const jobs=result.data.slice(0, 5).map((job) => ({
       job_id: job.job_id,
@@ -111,6 +133,7 @@ const findJobs = async (params) => {
     console.error("Error finding jobs via Jsearch API:", error);
     return [];
   }
+  
 };
 
 // =================================================================
