@@ -79,7 +79,10 @@ const findJobs = async (params) => {
     const url = new URL("https://jsearch.p.rapidapi.com/search");
     url.searchParams.append("query", query);
     if (employment_types) {
-      url.searchParams.append("employment_types", employment_types.toUpperCase());
+      url.searchParams.append(
+        "employment_types",
+        employment_types.toUpperCase()
+      );
     }
     url.searchParams.append("num_pages", "1");
 
@@ -94,16 +97,18 @@ const findJobs = async (params) => {
     const result = await response.json();
     if (!result.data || result.data.length === 0) return [];
 
-    const jobs=result.data.slice(0, 5).map((job) => ({
+    const jobs = result.data.slice(0, 5).map((job) => ({
       job_id: job.job_id,
       title: job.job_title,
       company: job.employer_name,
-      location: `${job.job_city || ''}${job.job_city && job.job_state ? ','  : ''}${job.job_state || ''}`.trim(),
-      description: job.job_description || 'No description available.',
+      location: `${job.job_city || ""}${
+        job.job_city && job.job_state ? "," : ""
+      }${job.job_state || ""}`.trim(),
+      description: job.job_description || "No description available.",
       applicationLink:
         job.job_apply_link ||
         `https://www.google.com/search?q=${encodeURIComponent(
-          job.job_title +  'at' + job.employer_name
+          job.job_title + "at" + job.employer_name
         )}`,
     }));
     return jobs;
@@ -172,7 +177,8 @@ const tools = [
  */
 app.post("/stt", upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Audio file missing." });
-  if (!sttClient) return res.status(500).json({ error: "STT client not initialized." });
+  if (!sttClient)
+    return res.status(500).json({ error: "STT client not initialized." });
 
   const languageCode = req.body.languageCode || "en-IN";
 
@@ -189,7 +195,8 @@ app.post("/stt", upload.single("audio"), async (req, res) => {
     const request = { audio, config };
     const [response] = await sttClient.recognize(request);
     const transcription =
-      response.results?.map((r) => r.alternatives[0].transcript).join("\n") || "";
+      response.results?.map((r) => r.alternatives[0].transcript).join("\n") ||
+      "";
     res.json({ text: transcription });
   } catch (err) {
     console.error("STT Error:", err);
@@ -210,17 +217,15 @@ app.post("/chat", async (req, res) => {
     // ✅ Auto-detect message language
     let detectedLanguage = "English";
 
-// Quick Hindi text detection (works better for short inputs)
-if (/[\u0900-\u097F]/.test(message)) {
-  detectedLanguage = "Hindi";
-} else {
-  const detectedLangCode = franc(message || "");
-  if (detectedLangCode !== "und") {
-    const langInfo = langs.where("3", detectedLangCode);
-    if (langInfo) detectedLanguage = langInfo.name;
-  }
-
-
+    // Quick Hindi text detection (works better for short inputs)
+    if (/[\u0900-\u097F]/.test(message)) {
+      detectedLanguage = "Hindi";
+    } else {
+      const detectedLangCode = franc(message || "");
+      if (detectedLangCode !== "und") {
+        const langInfo = langs.where("3", detectedLangCode);
+        if (langInfo) detectedLanguage = langInfo.name;
+      }
     }
 
     const userPrefs = await fetchUserPreferences(uid);
@@ -239,7 +244,10 @@ All answers must be written completely in ${detectedLanguage}, without switching
 
     const transformedHistory = (Array.isArray(history) ? history : [])
       .filter((msg) => msg.message)
-      .map((msg) => ({ role: msg.type === 1 ? "assistant" : "user", content: msg.message }));
+      .map((msg) => ({
+        role: msg.type === 1 ? "assistant" : "user",
+        content: msg.message,
+      }));
 
     const messages = [
       { role: "system", content: systemPrompt },
@@ -253,14 +261,19 @@ All answers must be written completely in ${detectedLanguage}, without switching
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
-      body: JSON.stringify({ model: AI_MODEL, messages, tools, tool_choice: "auto" }),
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages,
+        tools,
+        tool_choice: "auto",
+      }),
     });
 
     const data = await response.json();
     if (!data.choices || data.choices.length === 0) {
-            console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
-            throw new Error("Invalid response from OpenAI.");
-        }
+      console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
+      throw new Error("Invalid response from OpenAI.");
+    }
     const firstResponseMsg = data.choices[0].message;
 
     if (firstResponseMsg.tool_calls) {
@@ -271,7 +284,9 @@ All answers must be written completely in ${detectedLanguage}, without switching
 
       if (functionName === "find_jobs") {
         const { skills, location } = functionArgs;
-        const searchQuery = `${skills || 'jobs'}${location ? ` in ${location}` : ''}`;
+        const searchQuery = `${skills || "jobs"}${
+          location ? ` in ${location}` : ""
+        }`;
         toolResult = await findJobs({ query: searchQuery });
       } else if (functionName === "get_user_info") {
         toolResult = await fetchUserPreferences(uid);
@@ -282,23 +297,34 @@ All answers must be written completely in ${detectedLanguage}, without switching
       const finalMessages = [
         ...messages,
         firstResponseMsg,
-        { tool_call_id: toolCall.id, role: "tool", name: functionName, content: JSON.stringify(toolResult) },
+        {
+          tool_call_id: toolCall.id,
+          role: "tool",
+          name: functionName,
+          content: JSON.stringify(toolResult),
+        },
       ];
 
-      const finalResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({ model: AI_MODEL, messages: finalMessages }),
-      });
+      const finalResponse = await fetch(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({ model: AI_MODEL, messages: finalMessages }),
+        }
+      );
       const finalData = await finalResponse.json();
       if (!finalData.choices || finalData.choices.length === 0) {
-                console.error("❌ OpenAI Error on SECOND call:", JSON.stringify(finalData, null, 2));
-                throw new Error("Invalid response from OpenAI on the second call.");
-            }
-      res.json({ reply: finalData.choices[0].message.content});
+        console.error(
+          "❌ OpenAI Error on SECOND call:",
+          JSON.stringify(finalData, null, 2)
+        );
+        throw new Error("Invalid response from OpenAI on the second call.");
+      }
+      res.json({ reply: finalData.choices[0].message.content });
     } else {
       res.json({ reply: firstResponseMsg.content });
     }
@@ -318,48 +344,71 @@ app.get("/skills/analyze", async (req, res) => {
   try {
     const userPrefs = await fetchUserPreferences(uid);
     if (!userPrefs || !userPrefs.jobRole) {
-      return res.status(404).json({ error: "User profile or job role not found." });
+      return res
+        .status(404)
+        .json({ error: "User profile or job role not found." });
     }
 
-    const userSkills = (userPrefs.skills || "").toLowerCase().split(',').map((s) => s.trim());
+    const userSkills = (userPrefs.skills || "")
+      .toLowerCase()
+      .split(",")
+      .map((s) => s.trim());
     const jobRole = userPrefs.jobRole;
 
-        const skillsQuestion = `List the top 8 most important technical skills for a '${jobRole}'. Respond ONLY with a comma-separated list (e.g., skill1,skill2,skill3).`;
-    const skillsResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({ model: "gpt-3.5-turbo", messages: [{ role: "user", content: skillsQuestion }] }),
-    });
-    const skillsData = await skillsResponse.json();
-    const requiredSkillsText = skillsData.choices[0].message.content;
-    const requiredSkills = requiredSkillsText.toLowerCase().split(',').map((s) => s.trim());
-    const missingSkills = requiredSkills.filter(skill => !userSkills.includes(skill));
-
-    const learningResources = {};
-    for (const skill of missingSkills) {
-            const resourceQuestion = `Provide one high-quality, public URL for a tutorial or course to learn '${skill}'. Respond ONLY with the URL.`;
-      const resourceResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const skillsQuestion = `List the top 8 most important technical skills for a '${jobRole}'. Respond ONLY with a comma-separated list (e.g., skill1,skill2,skill3).`;
+    const skillsResponse = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
-        body: JSON.stringify({ model: "gpt-3.5-turbo", messages: [{ role: "user", content: resourceQuestion }] }),
-      });
+        body: JSON.stringify({
+          model: "gpt-3.5-turbo",
+          messages: [{ role: "user", content: skillsQuestion }],
+        }),
+      }
+    );
+    const skillsData = await skillsResponse.json();
+    const requiredSkillsText = skillsData.choices[0].message.content;
+    const requiredSkills = requiredSkillsText
+      .toLowerCase()
+      .split(",")
+      .map((s) => s.trim());
+    const missingSkills = requiredSkills.filter(
+      (skill) => !userSkills.includes(skill)
+    );
+
+    const learningResources = {};
+    for (const skill of missingSkills) {
+      const resourceQuestion = `Provide one high-quality, public URL for a tutorial or course to learn '${skill}'. Respond ONLY with the URL.`;
+      const resourceResponse = await fetch(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-3.5-turbo",
+            messages: [{ role: "user", content: resourceQuestion }],
+          }),
+        }
+      );
       const resourceData = await resourceResponse.json();
       const url = resourceData.choices[0].message.content.trim();
       if (url.startsWith("http")) learningResources[skill] = url;
     }
 
-res.json({
-            jobRole: jobRole,
-            requiredSkills: requiredSkills,
-            missingSkills: missingSkills,
-            learningResources: learningResources,
-        });  } catch (err) {
+    res.json({
+      jobRole: jobRole,
+      requiredSkills: requiredSkills,
+      missingSkills: missingSkills,
+      learningResources: learningResources,
+    });
+  } catch (err) {
     console.error("Error in /skills/analyze endpoint:", err);
     res.status(500).json({ error: "Skill analysis failed." });
   }
@@ -375,10 +424,10 @@ app.get("/jobs", async (req, res) => {
     if (!searchQuery && uid) {
       const userPrefs = await fetchUserPreferences(uid);
       searchQuery = userPrefs
-        ? `${userPrefs.skills || 'jobs'} in ${userPrefs.location || 'India'}`
-        : 'tech jobs in India';
+        ? `${userPrefs.skills || "jobs"} in ${userPrefs.location || "India"}`
+        : "tech jobs in India";
     } else if (!searchQuery) {
-      searchQuery = 'jobs in India';
+      searchQuery = "jobs in India";
     }
     const jobsResult = await findJobs({ query: searchQuery, employment_types });
     res.json(jobsResult);
@@ -390,7 +439,11 @@ app.get("/jobs", async (req, res) => {
 app.get("/users/:uid/saved-jobs", async (req, res) => {
   const { uid } = req.params;
   try {
-    const snapshot = await db.collection("users").doc(uid).collection("saved_jobs").get();
+    const snapshot = await db
+      .collection("users")
+      .doc(uid)
+      .collection("saved_jobs")
+      .get();
     const savedJobs = snapshot.docs.map((doc) => doc.data());
     res.json(savedJobs);
   } catch (error) {
@@ -404,7 +457,12 @@ app.post("/users/:uid/saved-jobs", async (req, res) => {
   const jobId = jobData.job_id;
   if (!jobId) return res.status(400).json({ error: "Job ID missing." });
   try {
-    await db.collection("users").doc(uid).collection("saved_jobs").doc(jobId).set(jobData);
+    await db
+      .collection("users")
+      .doc(uid)
+      .collection("saved_jobs")
+      .doc(jobId)
+      .set(jobData);
     res.status(201).json({ message: "Job saved" });
   } catch (error) {
     res.status(500).json({ error: "Could not save job." });
@@ -414,7 +472,12 @@ app.post("/users/:uid/saved-jobs", async (req, res) => {
 app.delete("/users/:uid/saved-jobs/:jobId", async (req, res) => {
   const { uid, jobId } = req.params;
   try {
-    await db.collection("users").doc(uid).collection("saved_jobs").doc(jobId).delete();
+    await db
+      .collection("users")
+      .doc(uid)
+      .collection("saved_jobs")
+      .doc(jobId)
+      .delete();
     res.status(200).json({ message: "Job unsaved" });
   } catch (error) {
     res.status(500).json({ error: "Could not unsave job." });
