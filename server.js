@@ -92,29 +92,7 @@ const findJobs = async (params) => {
     });
 
     const result = await response.json();
-    if (!result.data || result.data.length === 0) {
-  console.warn("⚠️ No jobs found, returning fallback demo data.");
-  return [
-    {
-      job_id: "demo1",
-      title: "Frontend Developer",
-      company: "Techify Solutions",
-      location: "Bengaluru, India",
-      description: "Work on modern web apps using React and Tailwind CSS.",
-      applicationLink: "https://www.naukri.com/frontend-developer-jobs",
-    },
-    {
-      job_id: "demo2",
-      title: "Backend Engineer",
-      company: "CloudCore Labs",
-      location: "Pune, India",
-      description: "Develop APIs using Node.js and MongoDB.",
-      applicationLink: "https://www.naukri.com/backend-developer-jobs",
-    },
-  ];
-}
-
-console.log("🔍 Querying jobs for:", query, "Type:", employment_types);
+    if (!result.data || result.data.length === 0) return [];
 
     const jobs=result.data.slice(0, 5).map((job) => ({
       job_id: job.job_id,
@@ -133,7 +111,6 @@ console.log("🔍 Querying jobs for:", query, "Type:", employment_types);
     console.error("Error finding jobs via Jsearch API:", error);
     return [];
   }
-  
 };
 
 // =================================================================
@@ -231,11 +208,19 @@ app.post("/chat", async (req, res) => {
 
   try {
     // ✅ Auto-detect message language
-    let detectedLangCode = franc(message || "");
     let detectedLanguage = "English";
-    if (detectedLangCode !== "und") {
-      const langInfo = langs.where("3", detectedLangCode);
-      if (langInfo) detectedLanguage = langInfo.name;
+
+// Quick Hindi text detection (works better for short inputs)
+if (/[\u0900-\u097F]/.test(message)) {
+  detectedLanguage = "Hindi";
+} else {
+  const detectedLangCode = franc(message || "");
+  if (detectedLangCode !== "und") {
+    const langInfo = langs.where("3", detectedLangCode);
+    if (langInfo) detectedLanguage = langInfo.name;
+  }
+
+
     }
 
     const userPrefs = await fetchUserPreferences(uid);
@@ -247,9 +232,10 @@ app.post("/chat", async (req, res) => {
 You MUST use the 'find_jobs' tool for job-related questions.
 Always respond in ${detectedLanguage}.
 When presenting jobs, you MUST use the exact data from the tool.
-Guide users to the application link for more information. ${personalizationContext}
+Guide users to the application link for more information.
 Do not invent job data; use exact data returned by the tool.
-${personalizationContext}`;
+The user is communicating in ${detectedLanguage}. 
+All answers must be written completely in ${detectedLanguage}, without switching to English. ${personalizationContext}`;
 
     const transformedHistory = (Array.isArray(history) ? history : [])
       .filter((msg) => msg.message)
