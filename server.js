@@ -94,16 +94,16 @@ const findJobs = async (params) => {
     const result = await response.json();
     if (!result.data || result.data.length === 0) return [];
 
-    const jobs=result.data.slice(0, 5).map((job) => ({
+    const jobs = result.data.slice(0, 5).map((job) => ({
       job_id: job.job_id,
       title: job.job_title,
       company: job.employer_name,
-      location: `${job.job_city || ''}${job.job_city && job.job_state ? ','  : ''}${job.job_state || ''}`.trim(),
+      location: `${job.job_city || ''}${job.job_city && job.job_state ? ', ' : ''}${job.job_state || ''}`.trim(),
       description: job.job_description || 'No description available.',
       applicationLink:
         job.job_apply_link ||
         `https://www.google.com/search?q=${encodeURIComponent(
-          job.job_title +  'at' + job.employer_name
+          job.job_title + ' at ' + job.employer_name
         )}`,
     }));
     return jobs;
@@ -114,54 +114,44 @@ const findJobs = async (params) => {
 };
 
 // =================================================================
-// 3. AI TOOLS CONFIGURATION
+// 3. AI TOOLS CONFIGURATION (CORRECTED)
 // =================================================================
 
 const tools = [
   {
     type: "function",
-
     function: {
       name: "find_jobs",
-
       description:
-        "Searches for real, live job listings from an external database based on criteria like skills or location.",
-
+        "Searches for real, live job listings from an external database based on a search query.",
       parameters: {
         type: "object",
-
         properties: {
-          skills: {
+          query: {
             type: "string",
-
             description:
-              "Job title or skills to search for, e.g., 'Python developer'",
+              "The full search query, including job title, skills, and location. For example: 'Android developer in Bengaluru' or 'React jobs in Mumbai'.",
           },
-
-          location: {
-            type: "string",
-
-            description: "Desired job location, e.g., 'Bengaluru'",
-          },
+          employment_types: {
+             type: "string",
+             description: "The type of employment, e.g., 'FULLTIME', 'CONTRACTOR', 'INTERN'."
+          }
         },
-
-        required: [],
+        required: ["query"], // Make the query a required parameter
       },
     },
   },
   {
     type: "function",
-
     function: {
       name: "get_user_info",
-
       description:
         "Retrieves the current user's profile information from Firestore.",
-
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
 ];
+
 
 // =================================================================
 // 4. API ENDPOINTS
@@ -210,17 +200,15 @@ app.post("/chat", async (req, res) => {
     // ✅ Auto-detect message language
     let detectedLanguage = "English";
 
-// Quick Hindi text detection (works better for short inputs)
-if (/[\u0900-\u097F]/.test(message)) {
-  detectedLanguage = "Hindi";
-} else {
-  const detectedLangCode = franc(message || "");
-  if (detectedLangCode !== "und") {
-    const langInfo = langs.where("3", detectedLangCode);
-    if (langInfo) detectedLanguage = langInfo.name;
-  }
-
-
+    // Quick Hindi text detection (works better for short inputs)
+    if (/[\u0900-\u097F]/.test(message)) {
+      detectedLanguage = "Hindi";
+    } else {
+      const detectedLangCode = franc(message || "");
+      if (detectedLangCode !== "und") {
+        const langInfo = langs.where("3", detectedLangCode);
+        if (langInfo) detectedLanguage = langInfo.name;
+      }
     }
 
     const userPrefs = await fetchUserPreferences(uid);
@@ -259,8 +247,8 @@ Leverage this data to personalize responses. For example, if a user asks for "jo
 // ==========================
 - **Function 'find_jobs':**
     - **Trigger:** Invoke this for any job search query (e.g., "find me a job," "any openings for a designer," "I need work in Delhi").
-    - **Parameter Strategy:** Your main goal is to extract 'skills' and 'location' arguments for this function.
-        - If the query is specific ("find python developer jobs in Bengaluru"), call the function with 'skills': 'python developer' and 'location': 'Bengaluru'.
+    - **Parameter Strategy:** Your main goal is to extract the 'query' argument for this function.
+        - If the query is specific ("find python developer jobs in Bengaluru"), call the function with 'query': 'python developer in Bengaluru'.
         - If the query is ambiguous ("I need a job"), you MUST ask clarifying questions before calling the tool. 
           For example: "I can certainly help with that. What kind of job are you looking for, and in which city?"
 - **Function 'get_user_info':**
@@ -306,9 +294,9 @@ Leverage this data to personalize responses. For example, if a user asks for "jo
 
     const data = await response.json();
     if (!data.choices || data.choices.length === 0) {
-            console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
-            throw new Error("Invalid response from OpenAI.");
-        }
+              console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
+              throw new Error("Invalid response from OpenAI.");
+            }
     const firstResponseMsg = data.choices[0].message;
 
     if (firstResponseMsg.tool_calls) {
@@ -317,10 +305,13 @@ Leverage this data to personalize responses. For example, if a user asks for "jo
       const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
       let toolResult;
 
+      // For easier debugging
+      console.log("🤖 AI is calling tool:", functionName, "with arguments:", functionArgs);
+      
       if (functionName === "find_jobs") {
-        const { skills, location } = functionArgs;
-        const searchQuery = `${skills || 'jobs'}${location ? ` in ${location}` : ''}`;
-        toolResult = await findJobs({ query: searchQuery });
+        // --- CORRECTED LOGIC ---
+        // Directly pass the arguments from the AI to our function
+        toolResult = await findJobs(functionArgs);
       } else if (functionName === "get_user_info") {
         toolResult = await fetchUserPreferences(uid);
       } else {
@@ -343,9 +334,9 @@ Leverage this data to personalize responses. For example, if a user asks for "jo
       });
       const finalData = await finalResponse.json();
       if (!finalData.choices || finalData.choices.length === 0) {
-                console.error("❌ OpenAI Error on SECOND call:", JSON.stringify(finalData, null, 2));
-                throw new Error("Invalid response from OpenAI on the second call.");
-            }
+                      console.error("❌ OpenAI Error on SECOND call:", JSON.stringify(finalData, null, 2));
+                      throw new Error("Invalid response from OpenAI on the second call.");
+                  }
       res.json({ reply: finalData.choices[0].message.content});
     } else {
       res.json({ reply: firstResponseMsg.content });
@@ -407,7 +398,7 @@ res.json({
             requiredSkills: requiredSkills,
             missingSkills: missingSkills,
             learningResources: learningResources,
-        });  } catch (err) {
+        });   } catch (err) {
     console.error("Error in /skills/analyze endpoint:", err);
     res.status(500).json({ error: "Skill analysis failed." });
   }
