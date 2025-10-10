@@ -21,7 +21,7 @@ app.use(bodyParser.json({ limit: "1mb" }));
 const upload = multer({ dest: "uploads/" });
 
 // Set a strong model by default; override via .env if desired
-const AI_MODEL = process.env.AI_MODEL || "gpt-4-turbo";
+const AI_MODEL = process.env.AI_MODEL || "gpt-3.5-turbo";
 
 // Global STT client handle
 let sttClient;
