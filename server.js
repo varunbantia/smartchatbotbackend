@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import bodyParser from "body-parser";
 import fetch from "node-fetch";
@@ -17,31 +18,38 @@ dotenv.config();
 // =================================================================
 
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.urlencoded({ extended: true }));
 const upload = multer({ dest: "uploads/" });
-const AI_MODEL = "gpt-3.5-turbo";
 
-let sttClient;
+// AI model to use with OpenAI chat completions (you can change if needed)
+const AI_MODEL = process.env.OPENAI_MODEL || "gpt-3.5-turbo";
 
-// ✅ Parse Firebase credentials from ENV
-const firebaseServiceAccount = JSON.parse(
-  process.env.FIREBASE_SERVICE_ACCOUNT_JSON
-);
+let sttClient = null;
 
-// ✅ Parse Google STT credentials from ENV
-const googleServiceAccount = JSON.parse(
-  process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
-);
+// Parse Firebase & Google credentials from ENV (must be JSON strings)
+const firebaseServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
+  ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)
+  : null;
+
+const googleServiceAccount = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON
+  ? JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)
+  : null;
 
 try {
-  // Firebase Initialization
+  if (!firebaseServiceAccount) throw new Error("Missing FIREBASE_SERVICE_ACCOUNT_JSON");
   admin.initializeApp({
     credential: admin.credential.cert(firebaseServiceAccount),
     projectId: firebaseServiceAccount.project_id,
   });
   console.log("✅ Firebase Admin initialized successfully.");
+} catch (err) {
+  console.error("🔥 Firebase initialization failed:", err);
+  process.exit(1);
+}
 
-  // Google Cloud STT Initialization
+try {
+  if (!googleServiceAccount) throw new Error("Missing GOOGLE_APPLICATION_CREDENTIALS_JSON");
   sttClient = new speech.SpeechClient({
     credentials: {
       client_email: googleServiceAccount.client_email,
@@ -51,36 +59,71 @@ try {
   });
   console.log("✅ Google Speech-to-Text client initialized successfully.");
 } catch (err) {
-  console.error("🔥 Initialization failed:", err);
-  process.exit(1);
+  console.error("🔥 Google STT initialization failed:", err);
+  // We won't exit — STT endpoints will return an error if invoked
 }
 
 const db = admin.firestore();
 
 // =================================================================
-// 2. HELPER FUNCTIONS
+// 2. HELPERS: Language detection & utilities
 // =================================================================
 
-const fetchUserPreferences = async (uid) => {
+/**
+ * detectLanguageSimple(message)
+ * Returns one of: "English", "Hindi", "Punjabi"
+ * Approach:
+ *  - If message contains Devanagari Unicode -> Hindi
+ *  - If message contains Gurmukhi Unicode -> Punjabi
+ *  - Otherwise use franc -> map to the three supported languages if possible
+ */
+function detectLanguageSimple(message) {
+  if (!message || typeof message !== "string" || message.trim() === "") return "English";
+
+  // Detect Hindi (Devanagari)
+  if (/[\u0900-\u097F]/.test(message)) return "Hindi";
+
+  // Detect Punjabi (Gurmukhi)
+  if (/[\u0A00-\u0A7F]/.test(message)) return "Punjabi";
+
+  // Use franc fallback
+  try {
+    const code3 = franc(message);
+    if (code3 && code3 !== "und") {
+      const info = langs.where("3", code3);
+      if (info && info.name) {
+        if (info.name.toLowerCase().includes("english")) return "English";
+        if (info.name.toLowerCase().includes("hindi")) return "Hindi";
+        if (info.name.toLowerCase().includes("punjabi")) return "Punjabi";
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  // default
+  return "English";
+}
+
+async function fetchUserPreferences(uid) {
   if (!uid) return null;
   try {
-    const userDoc = await db.collection("users").doc(uid).get();
-    return userDoc.exists ? userDoc.data() : null;
-  } catch (error) {
-    console.error("Error fetching user from Firestore:", error);
+    const snap = await db.collection("users").doc(uid).get();
+    return snap.exists ? snap.data() : null;
+  } catch (err) {
+    console.error("Error fetching user prefs:", err);
     return null;
   }
-};
+}
 
 const findJobs = async (params) => {
   try {
-    const { query, employment_types } = params;
+    const { query, employment_types } = params || {};
+    if (!query || query.trim() === "") return [];
 
     const url = new URL("https://jsearch.p.rapidapi.com/search");
     url.searchParams.append("query", query);
-    if (employment_types) {
-      url.searchParams.append("employment_types", employment_types.toUpperCase());
-    }
+    if (employment_types) url.searchParams.append("employment_types", (employment_types || "").toUpperCase());
     url.searchParams.append("num_pages", "1");
 
     const response = await fetch(url, {
@@ -92,29 +135,26 @@ const findJobs = async (params) => {
     });
 
     const result = await response.json();
-    if (!result.data || result.data.length === 0) return [];
+    if (!result?.data || result.data.length === 0) return [];
 
-    const jobs = result.data.slice(0, 5).map((job) => ({
+    const jobs = result.data.slice(0, 7).map((job) => ({
       job_id: job.job_id,
       title: job.job_title,
       company: job.employer_name,
-      location: `${job.job_city || ''}${job.job_city && job.job_state ? ', ' : ''}${job.job_state || ''}`.trim(),
-      description: job.job_description || 'No description available.',
-      applicationLink:
-        job.job_apply_link ||
-        `https://www.google.com/search?q=${encodeURIComponent(
-          job.job_title + ' at ' + job.employer_name
-        )}`,
+      location: `${job.job_city || ""}${job.job_city && job.job_state ? ", " : ""}${job.job_state || ""}`.trim(),
+      description: job.job_description || "No description available.",
+      applicationLink: job.job_apply_link || `https://www.google.com/search?q=${encodeURIComponent(job.job_title + " " + job.employer_name)}`,
     }));
+
     return jobs;
-  } catch (error) {
-    console.error("Error finding jobs via Jsearch API:", error);
+  } catch (err) {
+    console.error("Error in findJobs:", err);
     return [];
   }
 };
 
 // =================================================================
-// 3. AI TOOLS CONFIGURATION (CORRECTED)
+// 3. Tools configuration (function definitions for the model)
 // =================================================================
 
 const tools = [
@@ -122,49 +162,47 @@ const tools = [
     type: "function",
     function: {
       name: "find_jobs",
-      description:
-        "Searches for real, live job listings from an external database based on a search query.",
+      description: "Searches for real, live job listings from an external database based on a search query.",
       parameters: {
         type: "object",
         properties: {
-          query: {
-            type: "string",
-            description:
-              "The full search query, including job title, skills, and location. For example: 'Android developer in Bengaluru' or 'React jobs in Mumbai'.",
-          },
-          employment_types: {
-             type: "string",
-             description: "The type of employment, e.g., 'FULLTIME', 'CONTRACTOR', 'INTERN'."
-          }
+          query: { type: "string", description: "Full search query (e.g., 'android developer in Bengaluru')" },
+          employment_types: { type: "string", description: "Hiring type: FULLTIME, CONTRACTOR, INTERN, etc." }
         },
-        required: ["query"], // Make the query a required parameter
-      },
-    },
+        required: ["query"]
+      }
+    }
   },
   {
     type: "function",
     function: {
       name: "get_user_info",
-      description:
-        "Retrieves the current user's profile information from Firestore.",
-      parameters: { type: "object", properties: {}, required: [] },
-    },
-  },
+      description: "Retrieves the user's profile stored in Firestore.",
+      parameters: { type: "object", properties: {}, required: [] }
+    }
+  }
 ];
 
+// =================================================================
+// 4. API Endpoints
+// =================================================================
 
-// =================================================================
-// 4. API ENDPOINTS
-// =================================================================
+app.get("/", (req, res) => {
+  res.json({ status: "ok", message: "SmartChatbot backend running" });
+});
 
 /**
- * 🎙️ Speech-to-Text Endpoint
+ * STT endpoint:
+ * Receives an audio file (field name: audio) and optional languageCode.
+ * Returns { text: "...", detectedLanguage: "English" }
  */
 app.post("/stt", upload.single("audio"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Audio file missing." });
   if (!sttClient) return res.status(500).json({ error: "STT client not initialized." });
 
-  const languageCode = req.body.languageCode || "en-IN";
+  // If client provides languageCode, use it, else default to "en-IN" to start
+  const providedLang = (req.body.languageCode || "").trim();
+  const languageCode = providedLang || "en-IN";
 
   try {
     const audioBytes = fs.readFileSync(req.file.path).toString("base64");
@@ -172,183 +210,171 @@ app.post("/stt", upload.single("audio"), async (req, res) => {
       encoding: "AMR",
       sampleRateHertz: 8000,
       languageCode,
-      alternativeLanguageCodes: ["en-IN", "hi-IN", "pa-IN"],
+      alternativeLanguageCodes: ["en-IN", "hi-IN", "pa-IN"]
     };
 
     const audio = { content: audioBytes };
     const request = { audio, config };
+
     const [response] = await sttClient.recognize(request);
-    const transcription =
-      response.results?.map((r) => r.alternatives[0].transcript).join("\n") || "";
-    res.json({ text: transcription });
+    const transcription = response.results?.map(r => r.alternatives[0].transcript).join("\n") || "";
+
+    // Detect language from transcription (prefer script detection)
+    const detectedLanguage = detectLanguageSimple(transcription || "");
+
+    return res.json({ text: transcription, detectedLanguage });
   } catch (err) {
     console.error("STT Error:", err);
-    res.status(500).json({ error: "Error transcribing audio" });
+    return res.status(500).json({ error: "Error transcribing audio." });
   } finally {
     if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
   }
 });
 
 /**
- * 💬 Chat Endpoint (Multilingual)
+ * Chat endpoint:
+ * Body: { message, history, uid }
+ *
+ * Returns: { reply, detectedLanguage }
  */
 app.post("/chat", async (req, res) => {
-  const { message, history, uid } = req.body;
-  if (!uid) return res.status(400).json({ error: "User ID is missing." });
-
   try {
-    // ✅ Auto-detect message language
-    let detectedLanguage = "English";
+    const { message, history, uid } = req.body;
 
-    // Quick Hindi text detection (works better for short inputs)
-    if (/[\u0900-\u097F]/.test(message)) {
-      detectedLanguage = "Hindi";
-    } else {
-      const detectedLangCode = franc(message || "");
-      if (detectedLangCode !== "und") {
-        const langInfo = langs.where("3", detectedLangCode);
-        if (langInfo) detectedLanguage = langInfo.name;
-      }
+    if (!uid) return res.status(400).json({ error: "User ID is missing." });
+    if (!message || typeof message !== "string" || message.trim() === "") {
+      return res.status(400).json({ error: "Message is empty." });
     }
 
+    // 1) Detect language (English/Hindi/Punjabi)
+    const detectedLanguage = detectLanguageSimple(message);
+    console.log("Detected language:", detectedLanguage);
+
+    // 2) Fetch user prefs for personalization (if available)
     const userPrefs = await fetchUserPreferences(uid);
-    let personalizationContext = userPrefs
-      ? `The user's name is ${userPrefs.name}, and their skills include ${userPrefs.skills}.`
-      : "";
+    const personalizationContext = userPrefs ? `User name: ${userPrefs.name || "N/A"}. Skills: ${userPrefs.skills || "N/A"}. Location: ${userPrefs.location || "N/A"}.` : "";
 
-    const systemPrompt = `
-// ==========================
-// 🌟 CORE IDENTITY & PERSONA
-// ==========================
-You are RozgarAI, an expert and empathetic AI career mentor. 
-Your primary goal is to empower users by finding relevant job opportunities and providing actionable career advice. 
-Your tone should be encouraging, professional, and clear.
+    // 3) Compose system prompt with explicit language instruction
+    const systemPrompt = `You are RozgarAI, an expert and empathetic AI career mentor.
+Follow these rules:
+1) Tone: helpful, professional, concise.
+2) When responding, use EXACTLY the user's detected language and ONLY that language.
+   Detected language for this request: ${detectedLanguage}.
+   Supported languages: English, Hindi, Punjabi.
+3) If the user's intent is a job search, use the 'find_jobs' tool. Do not hallucinate job details.
+4) For non-job queries give short, actionable guidance.
+5) Never mix languages within a single response. Reply only in ${detectedLanguage}.`;
 
-// ==========================
-// 🧭 PRIMARY DIRECTIVES
-// ==========================
-1. **Prioritize Tool Use:** Your primary function is to assist with job searches. You MUST use the 'find_jobs' tool whenever a user's intent is related to finding employment.
-2. **Grounding in Reality:** You MUST present job data *exactly* as returned by the 'find_jobs' tool. NEVER invent or hallucinate job details, application links, or company names. If information is unavailable, state that clearly.
-3. **Language Discipline:** You MUST conduct the entire conversation exclusively in ${detectedLanguage}. Do not switch to English or any other language unless it is the detected language.
-
-// ==========================
-// 👤 CONTEXTUAL AWARENESS (USER PROFILE)
-// ==========================
-You have access to the current user's profile information. Use it proactively.
-- User's Name: ${userPrefs?.name || 'the user'}
-- User's Stated Skills: ${userPrefs?.skills || 'Not specified'}
-- User's Target Job Role: ${userPrefs?.jobRole || 'Not specified'}
-- User's Preferred Location: ${userPrefs?.location || 'Not specified'}
-
-Leverage this data to personalize responses. For example, if a user asks for "jobs for me," use their stored skills and location to perform the search.
-
-// ==========================
-// ⚙️ TOOL USAGE PROTOCOL
-// ==========================
-- **Function 'find_jobs':**
-    - **Trigger:** Invoke this for any job search query (e.g., "find me a job," "any openings for a designer," "I need work in Delhi").
-    - **Parameter Strategy:** Your main goal is to extract the 'query' argument for this function.
-        - If the query is specific ("find python developer jobs in Bengaluru"), call the function with 'query': 'python developer in Bengaluru'.
-        - If the query is ambiguous ("I need a job"), you MUST ask clarifying questions before calling the tool. 
-          For example: "I can certainly help with that. What kind of job are you looking for, and in which city?"
-- **Function 'get_user_info':**
-    - **Trigger:** Use this tool only when the user explicitly asks about their stored profile information 
-      (e.g., "what skills do you have for me?", "is my profile up to date?").
-
-// ==========================
-// 💬 CONVERSATIONAL STRATEGY & BEHAVIOR
-// ==========================
-- **No Jobs Found:** If the 'find_jobs' tool returns an empty list, do NOT just say "no jobs found." 
-  Be a helpful advisor. Suggest alternative actions, like: 
-  "I couldn't find any exact matches for that right now. Would you like me to broaden the search to related skills or nearby locations?"
-- **Career Advice:** For non-job-search questions (e.g., "how to write a resume?", "interview tips"), provide concise, actionable advice based on your general knowledge. 
-  You do not have a tool for this, but you are an expert mentor.
-- **Greetings & Chit-Chat:** Always be polite. If the user says "hello," greet them by their name (if available) and ask how you can assist with their career goals today.
-- **Presenting Job Results:** When you get results from the 'find_jobs' tool, format them clearly and professionally for the user. 
-  Use markdown for readability. For each job, you MUST include:
-    - **Job Title**
-    - **Company Name**
-    - **Location**
-    - A direct link to apply.
-`;
-
-
+    // 4) Build messages for OpenAI function-calling style
+    // Transform history (expected format from app: array of { message, type } where type maybe constants)
     const transformedHistory = (Array.isArray(history) ? history : [])
-      .filter((msg) => msg.message)
-      .map((msg) => ({ role: msg.type === 1 ? "assistant" : "user", content: msg.message }));
+      .filter(m => m && (m.message || m.text))
+      .map(m => {
+        // preserve compatibility: some clients use { message, type } others { text, isUser }
+        const content = m.message || m.text || "";
+        const isAssistant = m.type === 1 || m.role === "assistant" || m.isUser === false;
+        return { role: isAssistant ? "assistant" : "user", content };
+      });
 
     const messages = [
       { role: "system", content: systemPrompt },
       ...transformedHistory,
-      { role: "user", content: message || "..." },
+      { role: "user", content: message }
     ];
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    // 5) Ask OpenAI (chat completions). We pass tools for potential function calls.
+    // NOTE: This implementation uses the older "chat/completions" endpoint.
+    const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
       },
-      body: JSON.stringify({ model: AI_MODEL, messages, tools, tool_choice: "auto" }),
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages,
+        functions: tools.map(t => t.function ? t.function : t),
+        function_call: "auto"
+      })
     });
 
-    const data = await response.json();
-    if (!data.choices || data.choices.length === 0) {
-              console.error("❌ OpenAI Error Response:", JSON.stringify(data, null, 2));
-              throw new Error("Invalid response from OpenAI.");
-            }
-    const firstResponseMsg = data.choices[0].message;
+    const openAiData = await openAiResponse.json();
 
-    if (firstResponseMsg.tool_calls) {
-      const toolCall = firstResponseMsg.tool_calls[0];
-      const functionName = toolCall.function.name;
-      const functionArgs = JSON.parse(toolCall.function.arguments || "{}");
-      let toolResult;
+    if (!openAiData || !openAiData.choices || openAiData.choices.length === 0) {
+      console.error("OpenAI returned no choices:", JSON.stringify(openAiData, null, 2));
+      return res.status(500).json({ error: "Invalid response from language model." });
+    }
 
-      // For easier debugging
-      console.log("🤖 AI is calling tool:", functionName, "with arguments:", functionArgs);
-      
+    const firstMsg = openAiData.choices[0].message;
+
+    // If the model wants to call a function (tool)
+    if (firstMsg && firstMsg.function_call) {
+      const functionName = firstMsg.function_call.name;
+      const functionArgsRaw = firstMsg.function_call.arguments || "{}";
+      let functionArgs;
+      try {
+        functionArgs = JSON.parse(functionArgsRaw);
+      } catch (e) {
+        functionArgs = {};
+      }
+
+      console.log("Model requested tool:", functionName, functionArgs);
+
+      let toolResult = null;
       if (functionName === "find_jobs") {
-        // --- CORRECTED LOGIC ---
-        // Directly pass the arguments from the AI to our function
         toolResult = await findJobs(functionArgs);
       } else if (functionName === "get_user_info") {
         toolResult = await fetchUserPreferences(uid);
       } else {
-        toolResult = { error: "Unknown function." };
+        toolResult = { error: "Unknown function requested." };
       }
 
-      const finalMessages = [
+      // Append the tool result and call the model again to get final message
+      const messagesWithTool = [
         ...messages,
-        firstResponseMsg,
-        { tool_call_id: toolCall.id, role: "tool", name: functionName, content: JSON.stringify(toolResult) },
+        firstMsg, // the assistant's tool_call message
+        {
+          role: "tool",
+          name: functionName,
+          content: JSON.stringify(toolResult)
+        }
       ];
 
       const finalResponse = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
         },
-        body: JSON.stringify({ model: AI_MODEL, messages: finalMessages }),
+        body: JSON.stringify({
+          model: AI_MODEL,
+          messages: messagesWithTool
+        })
       });
+
       const finalData = await finalResponse.json();
-      if (!finalData.choices || finalData.choices.length === 0) {
-                      console.error("❌ OpenAI Error on SECOND call:", JSON.stringify(finalData, null, 2));
-                      throw new Error("Invalid response from OpenAI on the second call.");
-                  }
-      res.json({ reply: finalData.choices[0].message.content});
+      if (!finalData || !finalData.choices || finalData.choices.length === 0) {
+        console.error("OpenAI second call failed:", JSON.stringify(finalData, null, 2));
+        return res.status(500).json({ error: "Failed to generate final response." });
+      }
+
+      const finalMsg = finalData.choices[0].message?.content || finalData.choices[0].message || "";
+      // Return reply and detectedLanguage so client knows what language was used
+      return res.json({ reply: finalMsg, detectedLanguage });
     } else {
-      res.json({ reply: firstResponseMsg.content });
+      // No tool call — direct reply
+      const replyContent = firstMsg?.content || "";
+      return res.json({ reply: replyContent, detectedLanguage });
     }
   } catch (err) {
-    console.error("Error in /chat endpoint:", err);
-    res.status(500).json({ error: "An error occurred." });
+    console.error("Error in /chat:", err);
+    return res.status(500).json({ error: "An error occurred processing the chat." });
   }
 });
 
 /**
- * 🧩 Skill Gap Analysis Endpoint
+ * Skill gap analysis
+ * GET /skills/analyze?uid=...
  */
 app.get("/skills/analyze", async (req, res) => {
   const { uid } = req.query;
@@ -356,97 +382,90 @@ app.get("/skills/analyze", async (req, res) => {
 
   try {
     const userPrefs = await fetchUserPreferences(uid);
-    if (!userPrefs || !userPrefs.jobRole) {
-      return res.status(404).json({ error: "User profile or job role not found." });
-    }
+    if (!userPrefs || !userPrefs.jobRole) return res.status(404).json({ error: "User profile or jobRole missing." });
 
-    const userSkills = (userPrefs.skills || "").toLowerCase().split(',').map((s) => s.trim());
+    const userSkills = (userPrefs.skills || "").toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
     const jobRole = userPrefs.jobRole;
 
-        const skillsQuestion = `List the top 8 most important technical skills for a '${jobRole}'. Respond ONLY with a comma-separated list (e.g., skill1,skill2,skill3).`;
-    const skillsResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    // Ask LLM for required skills (simple approach)
+    const skillsQuestion = `List the top 8 most important technical skills for a '${jobRole}'. Respond ONLY with a comma-separated list.`;
+    const skillsResp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({ model: "gpt-3.5-turbo", messages: [{ role: "user", content: skillsQuestion }] }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: JSON.stringify({ model: AI_MODEL, messages: [{ role: "user", content: skillsQuestion }] })
     });
-    const skillsData = await skillsResponse.json();
-    const requiredSkillsText = skillsData.choices[0].message.content;
-    const requiredSkills = requiredSkillsText.toLowerCase().split(',').map((s) => s.trim());
-    const missingSkills = requiredSkills.filter(skill => !userSkills.includes(skill));
+    const skillsData = await skillsResp.json();
+    const requiredSkillsText = skillsData?.choices?.[0]?.message?.content || "";
+    const requiredSkills = requiredSkillsText.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+    const missingSkills = requiredSkills.filter(s => !userSkills.includes(s));
 
     const learningResources = {};
     for (const skill of missingSkills) {
-            const resourceQuestion = `Provide one high-quality, public URL for a tutorial or course to learn '${skill}'. Respond ONLY with the URL.`;
-      const resourceResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({ model: "gpt-3.5-turbo", messages: [{ role: "user", content: resourceQuestion }] }),
-      });
-      const resourceData = await resourceResponse.json();
-      const url = resourceData.choices[0].message.content.trim();
-      if (url.startsWith("http")) learningResources[skill] = url;
+      const resourceQuestion = `Provide a reputable, public URL for learning '${skill}'. Reply only with the URL.`;
+      try {
+        const r = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+          body: JSON.stringify({ model: AI_MODEL, messages: [{ role: "user", content: resourceQuestion }] })
+        });
+        const d = await r.json();
+        const url = (d?.choices?.[0]?.message?.content || "").trim();
+        if (url.startsWith("http")) learningResources[skill] = url;
+      } catch (err) {
+        // continue if resource lookup fails
+      }
     }
 
-res.json({
-            jobRole: jobRole,
-            requiredSkills: requiredSkills,
-            missingSkills: missingSkills,
-            learningResources: learningResources,
-        });   } catch (err) {
-    console.error("Error in /skills/analyze endpoint:", err);
-    res.status(500).json({ error: "Skill analysis failed." });
+    return res.json({ jobRole, requiredSkills, missingSkills, learningResources });
+  } catch (err) {
+    console.error("Error in /skills/analyze:", err);
+    return res.status(500).json({ error: "Skill analysis failed." });
   }
 });
 
-/**
- * 💼 Job APIs (save, list, delete)
- */
+// Jobs endpoints (search saved/list)
 app.get("/jobs", async (req, res) => {
   const { uid, q, employment_types } = req.query;
-  let searchQuery = q;
   try {
-    if (!searchQuery && uid) {
-      const userPrefs = await fetchUserPreferences(uid);
-      searchQuery = userPrefs
-        ? `${userPrefs.skills || 'jobs'} in ${userPrefs.location || 'India'}`
-        : 'tech jobs in India';
-    } else if (!searchQuery) {
-      searchQuery = 'jobs in India';
+    let query = q;
+    if (!query && uid) {
+      const prefs = await fetchUserPreferences(uid);
+      query = prefs ? `${prefs.skills || "jobs"} in ${prefs.location || "India"}` : "tech jobs in India";
+    } else if (!query) {
+      query = "jobs in India";
     }
-    const jobsResult = await findJobs({ query: searchQuery, employment_types });
-    res.json(jobsResult);
+
+    const jobsResult = await findJobs({ query, employment_types });
+    return res.json(jobsResult);
   } catch (err) {
-    res.status(500).json({ error: "Error fetching jobs." });
+    console.error("Error in /jobs:", err);
+    return res.status(500).json({ error: "Error fetching jobs." });
   }
 });
 
 app.get("/users/:uid/saved-jobs", async (req, res) => {
   const { uid } = req.params;
   try {
-    const snapshot = await db.collection("users").doc(uid).collection("saved_jobs").get();
-    const savedJobs = snapshot.docs.map((doc) => doc.data());
-    res.json(savedJobs);
-  } catch (error) {
-    res.status(500).json({ error: "Could not fetch saved jobs." });
+    const snap = await db.collection("users").doc(uid).collection("saved_jobs").get();
+    const saved = snap.docs.map(d => d.data());
+    return res.json(saved);
+  } catch (err) {
+    console.error("Error fetching saved jobs:", err);
+    return res.status(500).json({ error: "Could not fetch saved jobs." });
   }
 });
 
 app.post("/users/:uid/saved-jobs", async (req, res) => {
   const { uid } = req.params;
   const jobData = req.body;
-  const jobId = jobData.job_id;
+  const jobId = jobData?.job_id;
   if (!jobId) return res.status(400).json({ error: "Job ID missing." });
   try {
     await db.collection("users").doc(uid).collection("saved_jobs").doc(jobId).set(jobData);
-    res.status(201).json({ message: "Job saved" });
-  } catch (error) {
-    res.status(500).json({ error: "Could not save job." });
+    return res.status(201).json({ message: "Job saved." });
+  } catch (err) {
+    console.error("Error saving job:", err);
+    return res.status(500).json({ error: "Could not save job." });
   }
 });
 
@@ -454,9 +473,10 @@ app.delete("/users/:uid/saved-jobs/:jobId", async (req, res) => {
   const { uid, jobId } = req.params;
   try {
     await db.collection("users").doc(uid).collection("saved_jobs").doc(jobId).delete();
-    res.status(200).json({ message: "Job unsaved" });
-  } catch (error) {
-    res.status(500).json({ error: "Could not unsave job." });
+    return res.json({ message: "Job unsaved." });
+  } catch (err) {
+    console.error("Error deleting saved job:", err);
+    return res.status(500).json({ error: "Could not unsave job." });
   }
 });
 
