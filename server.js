@@ -388,7 +388,13 @@ app.get("/skills/analyze", async (req, res) => {
     const jobRole = userPrefs.jobRole;
 
     // Ask LLM for required skills (simple approach)
-    const skillsQuestion = `List the top 8 most important technical skills for a '${jobRole}'. Respond ONLY with a comma-separated list.`;
+    const skillsQuestion = `
+List the top 8 most important technical skills for a '${jobRole}'.
+Respond ONLY with a comma-separated list.
+Each skill must be **only one or two words maximum** (e.g., 'Java', 'React Native', 'Data Analysis').
+Do not include explanations, numbers, or symbols.
+`;
+
     const skillsResp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
