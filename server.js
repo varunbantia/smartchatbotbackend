@@ -137,14 +137,39 @@ const findJobs = async (params) => {
     const result = await response.json();
     if (!result?.data || result.data.length === 0) return [];
 
-    const jobs = result.data.slice(0, 7).map((job) => ({
-      job_id: job.job_id,
-      title: job.job_title,
-      company: job.employer_name,
-      location: `${job.job_city || ""}${job.job_city && job.job_state ? ", " : ""}${job.job_state || ""}`.trim(),
-      description: job.job_description || "No description available.",
-      applicationLink: job.job_apply_link || `https://www.google.com/search?q=${encodeURIComponent(job.job_title + " " + job.employer_name)}`,
-    }));
+    // --- SYNTAX FIX IS HERE ---
+    // Change from .map((job) => ({ ... })) to .map((job) => { ... return { ... } })
+    const jobs = result.data.slice(0, 7).map((job) => {
+      
+      // 1. Put all your logo logic first
+      let logoUrl = job.employer_logo; // Try the API logo first
+
+      if (!logoUrl && job.employer_name) { // Also check if employer_name exists
+        // If it's null, guess the domain and use Clearbit's free logo API
+        try {
+          // Cleans the name: "Google, Inc." -> "google.com"
+          const domain = job.employer_name.toLowerCase()
+                                          .replace(/[^a-z0-9]/g, '') // Remove non-alphanumeric
+                                          .replace(/inc|llc|ltd|pvt/g, '') // Remove common suffixes
+                                          + ".com";
+          logoUrl = `https://logo.clearbit.com/${domain}`;
+        } catch (e) {
+          logoUrl = null; // Failsafe
+        }
+      }
+      
+      // 2. Now, return the complete object
+      return {
+        job_id: job.job_id,
+        title: job.job_title,
+        company: job.employer_name,
+        companyLogoUrl: logoUrl, // <-- Use the 'logoUrl' variable you just created
+        location: `${job.job_city || ""}${job.job_city && job.job_state ? ", " : ""}${job.job_state || ""}`.trim(),
+        description: job.job_description || "No description available.",
+        applicationLink: job.job_apply_link || `https://www.google.com/search?q=${encodeURIComponent(job.job_title + " " + job.employer_name)}`,
+      };
+    });
+    // --- END OF FIX ---
 
     return jobs;
   } catch (err) {
