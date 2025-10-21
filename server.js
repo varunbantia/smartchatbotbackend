@@ -116,6 +116,76 @@ async function fetchUserPreferences(uid) {
   }
 }
 
+// ... (all your imports and initializations) ...
+// const db = admin.firestore();
+
+// =================================================================
+// 2. HELPERS
+// =================================================================
+
+// ... (your detectLanguageSimple and fetchUserPreferences functions) ...
+
+/**
+ * NEW HELPER FUNCTION: Caching Logo Retriever
+ * This function finds a company logo, using Firestore as a cache.
+ */
+async function getCompanyLogo(companyName, jsearchLogo) {
+  // 1. If JSearch gave us a logo, just use it. It's the best one.
+  if (jsearchLogo) {
+    return jsearchLogo;
+  }
+  
+  // 2. If no company name, we can't do anything.
+  if (!companyName || companyName.trim() === "") {
+    return null;
+  }
+
+  // 3. Create a safe key for Firestore (e.g., "Juego Studios, Inc." -> "juegostudios")
+  const companyKey = companyName.toLowerCase()
+                                .replace(/[^a-z0-9]/g, '')
+                                .replace(/inc|llc|ltd|pvt/g, '');
+
+  if (!companyKey) return null;
+
+  // 4. Check our Firestore cache
+  const logoRef = db.collection('company_logos').doc(companyKey);
+  
+  try {
+    const logoDoc = await logoRef.get();
+
+    // 5. CACHE HIT: We found it! Return the saved URL instantly.
+    if (logoDoc.exists) {
+      console.log(`[Cache Hit] Found logo for: ${companyName}`);
+      return logoDoc.data().url;
+    }
+
+    // 6. CACHE MISS: Not in our database. Let's guess it.
+    console.log(`[Cache Miss] Guessing logo for: ${companyName}`);
+    const domain = `${companyKey}.com`;
+    const guessedUrl = `https://img.logo.dev/${domain}`;
+
+    // 7. Save our guess back to Firestore for next time
+    // We do this in the background (don't "await" it) to make the
+    // user's request finish faster.
+    logoRef.set({
+      url: guessedUrl,
+      companyName: companyName,
+      lastGuessed: admin.firestore.FieldValue.serverTimestamp()
+    }).catch(err => console.error("Failed to save logo to cache:", err));
+    
+    // 8. Return the URL we just guessed.
+    return guessedUrl;
+
+  } catch (err) {
+    console.error("Error in getCompanyLogo:", err);
+    return null; // Failsafe
+  }
+}
+
+/**
+ * UPDATED findJobs Function
+ * It now uses getCompanyLogo for each job.
+ */
 const findJobs = async (params) => {
   try {
     const { query, employment_types } = params || {};
@@ -136,40 +206,25 @@ const findJobs = async (params) => {
 
     const result = await response.json();
     if (!result?.data || result.data.length === 0) return [];
+    
+    // We must process all jobs in parallel since our new logo logic is async
+    const jobs = await Promise.all(
+      result.data.slice(0, 7).map(async (job) => {
+        
+        // Call our new caching function
+        const logoUrl = await getCompanyLogo(job.employer_name, job.employer_logo);
 
-    // --- SYNTAX FIX IS HERE ---
-    // Change from .map((job) => ({ ... })) to .map((job) => { ... return { ... } })
-    const jobs = result.data.slice(0, 7).map((job) => {
-      
-      // 1. Put all your logo logic first
-      let logoUrl = job.employer_logo; // Try the API logo first
-
-      if (!logoUrl && job.employer_name) { // Also check if employer_name exists
-        // If it's null, guess the domain and use Clearbit's free logo API
-        try {
-          // Cleans the name: "Google, Inc." -> "google.com"
-          const domain = job.employer_name.toLowerCase()
-                                          .replace(/[^a-z0-9]/g, '') // Remove non-alphanumeric
-                                          .replace(/inc|llc|ltd|pvt/g, '') // Remove common suffixes
-                                          + ".com";
-          logoUrl = `https://logo.clearbit.com/${domain}`;
-        } catch (e) {
-          logoUrl = null; // Failsafe
-        }
-      }
-      
-      // 2. Now, return the complete object
-      return {
-        job_id: job.job_id,
-        title: job.job_title,
-        company: job.employer_name,
-        companyLogoUrl: logoUrl, // <-- Use the 'logoUrl' variable you just created
-        location: `${job.job_city || ""}${job.job_city && job.job_state ? ", " : ""}${job.job_state || ""}`.trim(),
-        description: job.job_description || "No description available.",
-        applicationLink: job.job_apply_link || `https://www.google.com/search?q=${encodeURIComponent(job.job_title + " " + job.employer_name)}`,
-      };
-    });
-    // --- END OF FIX ---
+        return {
+          job_id: job.job_id,
+          title: job.job_title,
+          company: job.employer_name,
+          companyLogoUrl: logoUrl, // Use the final cached/guessed URL
+          location: `${job.job_city || ""}${job.job_city && job.job_state ? ", " : ""}${job.job_state || ""}`.trim(),
+          description: job.job_description || "No description available.",
+          applicationLink: job.job_apply_link || `https://www.google.com/search?q=${encodeURIComponent(job.job_title + " " + job.employer_name)}`,
+        };
+      })
+    );
 
     return jobs;
   } catch (err) {
@@ -178,6 +233,11 @@ const findJobs = async (params) => {
   }
 };
 
+// =================================================================
+// 3. Tools configuration (function definitions for the model)
+// =================================================================
+
+// ... (rest of your server.js file) ...
 // =================================================================
 // 3. Tools configuration (function definitions for the model)
 // =================================================================
