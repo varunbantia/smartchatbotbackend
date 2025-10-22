@@ -173,17 +173,59 @@ function getJobType(job) {
 /**
  * Formats experience data from JSearch job object
  */
+/**
+ * Formats experience data from JSearch job object (with text fallback)
+ */
 function getExperience(job) {
-  if (!job || !job.job_required_experience) return "N/A";
-  const exp = job.job_required_experience;
-  if (exp.no_experience_required) return "Entry Level";
-  const months = exp.required_experience_in_months;
-  if (months) {
-    if (months < 12) return `${months} months`;
-    const years = (months / 12).toFixed(1).replace(".0", "");
-    return `${years}+ years`;
-  }
-  return "N/A";
+    if (!job) return "Not Disclosed";
+
+    // === STEP 1: Try to use the "clean" structured data first ===
+    if (job.job_required_experience) {
+        const exp = job.job_required_experience;
+        if (exp.no_experience_required) return "Entry Level";
+
+        const months = exp.required_experience_in_months;
+        if (months) {
+            if (months < 12) return `${months} months`;
+            const years = (months / 12).toFixed(1).replace('.0', '');
+            return `${years}+ years`;
+        }
+    }
+
+    // === STEP 2: FALLBACK - Scan the raw job description text ===
+    // If the structured data was null, we search the description.
+    if (job.job_description) {
+        const description = job.job_description.toLowerCase();
+        
+        // Look for patterns like "5-7 years", "5+ years", "5 years"
+        // This regex looks for: (number)-(number) years, (number)+ years, or (number) years
+        const regex = /(\d[\d.,-]*\+?)\s*(to|-)?\s*(\d[\d.,-]*\+?)?\s*(year|yr|month)s?/i;
+        const match = description.match(regex);
+
+        if (match) {
+            // We found a match!
+            // match[1] is the first number (e.g., "5")
+            // match[2] is the dash (e.g., "-")
+            // match[3] is the second number (e.g., "7")
+            // match[4] is "year" or "month"
+            
+            if (match[3]) {
+                // It's a range like "5-7 years"
+                return `${match[1]}-${match[3]} ${match[4]}s`;
+            } else {
+                // It's a single value like "5+ years" or "5 years"
+                return `${match[1]} ${match[4]}s`;
+            }
+        }
+
+        // Check for "entry level"
+        if (description.includes("entry level") || description.includes("no experience")) {
+            return "Entry Level";
+        }
+    }
+
+    // === STEP 3: If we still find nothing, then it's undisclosed ===
+    return "Not Disclosed";
 }
 
 /**
@@ -349,8 +391,8 @@ app.post("/chat", async (req, res) => {
 Follow these rules:
 1) Tone: helpful, professional, concise.
 2) When responding, use EXACTLY the user's detected language and ONLY that language.
-   Detected language for this request: ${detectedLanguage}.
-   Supported languages: English, Hindi, Punjabi.
+Detected language for this request: ${detectedLanguage}.
+Supported languages: English, Hindi, Punjabi.
 3) If the user's intent is a job search, use the 'find_jobs' tool. Do not hallucinate job details.
 4) For non-job queries give short, actionable guidance.
 5) Never mix languages within a single response. Reply only in ${detectedLanguage}.`;
