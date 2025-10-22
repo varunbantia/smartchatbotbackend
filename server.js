@@ -176,6 +176,32 @@ function getJobType(job) {
 /**
  * Formats experience data from JSearch job object (with text fallback)
  */
+// ... (near your other helper functions)
+
+/**
+ * Cleans a job description by removing duplicate lines.
+ */
+function cleanJobDescription(description) {
+    if (!description || typeof description !== 'string') {
+        return "No description available.";
+    }
+
+    const lines = description.split('\n');
+    const uniqueLines = new Set();
+
+    // Use a Set to automatically handle duplicates
+    for (const line of lines) {
+        const trimmedLine = line.trim();
+        
+        // Only add lines that have actual content
+        if (trimmedLine) {
+            uniqueLines.add(trimmedLine);
+        }
+    }
+
+    // Join the unique lines back together with newlines
+    return Array.from(uniqueLines).join('\n\n'); // Add extra space for readability
+}
 function getExperience(job) {
     if (!job) return "Not Disclosed";
 
@@ -264,7 +290,7 @@ const findJobs = async (params) => {
         const location = `${job.job_city || ""}${
           job.job_city && job.job_state ? ", " : ""
         }${job.job_state || ""}`.trim();
-
+        const cleanDescription = cleanJobDescription(job.job_description);
         return {
           // --- Existing Fields ---
           job_id: job.job_id,
@@ -272,7 +298,7 @@ const findJobs = async (params) => {
           company: job.employer_name,
           companyLogoUrl: logoUrl,
           location: location || "N/A",
-          description: job.job_description || "No description available.",
+          description: cleanDescription || "No description available.",
           applicationLink:
             job.job_apply_link ||
             `https://www.google.com/search?q=${encodeURIComponent(
