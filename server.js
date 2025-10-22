@@ -181,26 +181,40 @@ function getJobType(job) {
 /**
  * Cleans a job description by removing duplicate lines.
  */
+/**
+ * Cleans a job description by:
+ * 1. Fixing fragmented lines (merging single newlines).
+ * 2. Removing duplicate paragraphs (that were separated by double newlines).
+ */
 function cleanJobDescription(description) {
     if (!description || typeof description !== 'string') {
         return "No description available.";
     }
 
-    const lines = description.split('\n');
-    const uniqueLines = new Set();
+    // This Set will store our final, clean paragraphs.
+    const uniqueParagraphs = new Set();
 
-    // Use a Set to automatically handle duplicates
-    for (const line of lines) {
-        const trimmedLine = line.trim();
+    // 1. Split the whole text by *double* newlines, which usually mark real paragraphs.
+    const paragraphs = description.split(/\n\s*\n/); // Splits on \n\n or \n \n
+
+    for (const para of paragraphs) {
         
-        // Only add lines that have actual content
-        if (trimmedLine) {
-            uniqueLines.add(trimmedLine);
+        // 2. Fix fragmentation:
+        //    Replace all *single* newlines *within* the paragraph with a space.
+        //    This merges "developing" and "and maintaining high" into one line.
+        const reFlowedParagraph = para.replace(/\n/g, ' ').trim();
+
+        // 3. Only add the paragraph if it has actual content
+        if (reFlowedParagraph) {
+            
+            // 4. Fix duplication:
+            //    Adding to a Set automatically removes duplicate paragraphs.
+            uniqueParagraphs.add(reFlowedParagraph);
         }
     }
 
-    // Join the unique lines back together with newlines
-    return Array.from(uniqueLines).join('\n\n'); // Add extra space for readability
+    // 5. Join the clean, unique paragraphs back together with proper spacing.
+    return Array.from(uniqueParagraphs).join('\n\n');
 }
 function getExperience(job) {
     if (!job) return "Not Disclosed";
