@@ -25,10 +25,30 @@ dotenv.config();
 
 // ... (Your existing config code: app, upload, sttClient, firebase init, etc.) ...
 // (No changes needed in section 1)
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+        // Ensure the uploads directory exists
+        const uploadDir = 'uploads/';
+        if (!fs.existsSync(uploadDir)){
+            fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        cb(null, uploadDir); // Save files in the 'uploads/' folder
+    },
+    filename: function (req, file, cb) {
+        // Use a unique name but keep the original extension
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const extension = path.extname(file.originalname); // Get extension from ORIGINAL name
+        cb(null, file.fieldname + '-' + uniqueSuffix + extension); // e.g., resumeFile-123456789.pdf
+    }
+});
+const upload = multer({
+    storage: storage, // Use the configured disk storage
+    limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
+});
 const app = express();
 app.use(bodyParser.json({ limit: "10mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
-const upload = multer({ dest: "uploads/" });
+
 
 const AI_MODEL = process.env.OPENAI_MODEL || "gpt-3.5-turbo";
 let sttClient = null;
