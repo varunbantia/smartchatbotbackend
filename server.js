@@ -5,17 +5,18 @@ import fetch from "node-fetch";
 import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
+import path from 'path';
+// --- CORRECTED PDF & DOCX IMPORTS ---
+import { createRequire } from "module"; // Helper to use require in ES Modules
+const require = createRequire(import.meta.url); // Create a require function
+const pdfParseFunction = require("pdf-parse"); // Use require, name it distinctively
+import mammoth from 'mammoth';
+// --- END CORRECTIONS ---
 import speech from "@google-cloud/speech";
 import admin from "firebase-admin";
 import { URL } from "url";
 import { franc } from "franc";
 import langs from "langs";
-import path from 'path';         
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
-   
-import mammoth from 'mammoth';
 
 dotenv.config();
 
@@ -103,29 +104,41 @@ async function extractResumeText(filePath) {
   try {
     if (fileExtension === '.pdf') {
       const dataBuffer = fs.readFileSync(filePath);
-      const data = await pdfParse(dataBuffer);
-      console.log(`Extracted ${data.text.length} characters from PDF.`);
-      return data.text;
+      // --- Use the variable imported via require ---
+      // Check if the required module is the function itself or needs .default
+      const parser = pdfParseFunction.default ? pdfParseFunction.default : pdfParseFunction;
+      if (typeof parser !== 'function') {
+         console.error('!!! pdfParse required module is not a function:', pdfParseFunction);
+         throw new Error('PDF parsing library loaded incorrectly.');
+      }
+      const data = await parser(dataBuffer); // <--- Use the resolved parser
+      console.log(`Extracted ${data.text ? data.text.length : 0} characters from PDF.`);
+      if (!data.text || data.text.trim() === '') {
+        console.warn(`PDF parsed but resulted in empty text: ${filePath}`);
+      }
+      return data.text || ""; // Return empty string if no text
     } else if (fileExtension === '.docx') {
       const result = await mammoth.extractRawText({ path: filePath });
-      console.log(`Extracted ${result.value.length} characters from DOCX.`);
-      return result.value;
+      console.log(`Extracted ${result.value ? result.value.length : 0} characters from DOCX.`);
+      return result.value || "";
     } else if (fileExtension === '.doc') {
-       console.warn("Extraction from .doc is not directly supported. User needs to save as .docx or .pdf.");
+       console.warn("Extraction from .doc is not directly supported.");
        throw new Error("Unsupported file format: .doc. Please use .docx or .pdf.");
     } else if (fileExtension === '.txt') {
         const text = fs.readFileSync(filePath, 'utf8');
         console.log(`Read ${text.length} characters from TXT.`);
         return text;
-    }
-    else {
+    } else {
       console.warn(`Unsupported file extension: ${fileExtension}`);
-      throw new Error(`Unsupported file type: ${fileExtension}. Please upload PDF or DOCX.`);
+      throw new Error(`Unsupported file type: ${fileExtension}. Please upload PDF, DOCX, or TXT.`);
     }
   } catch (error) {
-    console.error(`Error extracting text from ${filePath}:`, error);
-    // Rethrow specific errors or a generic one
-    if (error.message.includes("Unsupported file type")) throw error;
+    console.error(`!!! Original parsing error for ${filePath}:`, error); // Log original error
+    if (error.message.includes("Unsupported file type") || error.message.includes("Unsupported file format")) throw error;
+    // Add check for the specific TypeError
+    if (error instanceof TypeError && error.message.includes("is not a function")) {
+         throw new Error('Internal server error: PDF parsing library failed to load correctly.');
+    }
     throw new Error(`Failed to read or parse the resume file.`);
   }
 }
