@@ -10,8 +10,8 @@ import admin from "firebase-admin";
 import { URL } from "url";
 import { franc } from "franc";
 import langs from "langs";
-import path from 'path';         // <-- ADDED: For file extensions
-import pdf from 'pdf-parse';     // <-- ADDED: For PDF parsing
+import path from 'path';         
+import pdfParse from 'pdf-parse';     
 import mammoth from 'mammoth';
 
 dotenv.config();
@@ -80,7 +80,7 @@ async function extractResumeText(filePath) {
   try {
     if (fileExtension === '.pdf') {
       const dataBuffer = fs.readFileSync(filePath);
-      const data = await pdf(dataBuffer);
+      const data = await pdfParse(dataBuffer);
       console.log(`Extracted ${data.text.length} characters from PDF.`);
       return data.text;
     } else if (fileExtension === '.docx') {
