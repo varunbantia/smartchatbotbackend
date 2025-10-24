@@ -70,6 +70,90 @@ const db = admin.firestore();
 
 // ... (Your existing detectLanguageSimple, fetchUserPreferences, getCompanyLogo) ...
 // (No changes needed to those helpers)
+async function extractResumeText(filePath) {
+  const fileExtension = path.extname(filePath).toLowerCase();
+  console.log(`Attempting to extract text from file: ${filePath}, extension: ${fileExtension}`);
+
+  try {
+    if (fileExtension === '.pdf') {
+      const dataBuffer = fs.readFileSync(filePath);
+      const data = await pdf(dataBuffer);
+      console.log(`Extracted ${data.text.length} characters from PDF.`);
+      return data.text;
+    } else if (fileExtension === '.docx') {
+      const result = await mammoth.extractRawText({ path: filePath });
+      console.log(`Extracted ${result.value.length} characters from DOCX.`);
+      return result.value;
+    } else if (fileExtension === '.doc') {
+       console.warn("Extraction from .doc is not directly supported. User needs to save as .docx or .pdf.");
+       throw new Error("Unsupported file format: .doc. Please use .docx or .pdf.");
+    } else if (fileExtension === '.txt') {
+        const text = fs.readFileSync(filePath, 'utf8');
+        console.log(`Read ${text.length} characters from TXT.`);
+        return text;
+    }
+    else {
+      console.warn(`Unsupported file extension: ${fileExtension}`);
+      throw new Error(`Unsupported file type: ${fileExtension}. Please upload PDF or DOCX.`);
+    }
+  } catch (error) {
+    console.error(`Error extracting text from ${filePath}:`, error);
+    // Rethrow specific errors or a generic one
+    if (error.message.includes("Unsupported file type")) throw error;
+    throw new Error(`Failed to read or parse the resume file.`);
+  }
+}
+
+// --- NEW HELPER: Get Resume Feedback from AI ---
+async function getResumeFeedback(resumeText) {
+    if (!resumeText || resumeText.trim().length < 50) { // Basic check for meaningful text
+        throw new Error("Extracted resume text is too short or empty.");
+    }
+
+    const analysisPrompt = `Please act as an expert career coach and resume reviewer. Analyze the following resume text and provide constructive feedback. Focus on:
+1.  **Clarity & Conciseness:** Is the language clear and easy to understand? Is there unnecessary jargon?
+2.  **Impact & Achievements:** Does the candidate effectively showcase accomplishments using action verbs and quantifiable results (numbers, percentages)? Suggest specific areas where impact could be highlighted better.
+3.  **Keywords & ATS:** Are relevant keywords likely present for common Applicant Tracking Systems (ATS)? Suggest potential keywords based on typical roles if missing.
+4.  **Formatting & Structure (Inferred):** Based *only* on the text content, does the flow seem logical? (Acknowledge you cannot see the actual visual format).
+5.  **Common Mistakes:** Point out any obvious errors like potential typos (mention if unsure), generic statements, or lack of tailoring (if inferrable).
+6.  **Overall Summary:** A brief concluding thought on the resume's strengths and primary areas for improvement.
+
+Format the feedback clearly using markdown headings or bullet points for readability. Be encouraging but direct.
+
+Resume Text:
+---
+${resumeText}
+---
+`;
+
+    try {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+                model: AI_MODEL, // Or a more advanced model if needed for analysis
+                messages: [{ role: "user", content: analysisPrompt }],
+                temperature: 0.5, // Slightly lower temperature for more focused feedback
+            }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data?.choices?.[0]?.message?.content) {
+            console.error("OpenAI error during feedback generation:", JSON.stringify(data, null, 2));
+            throw new Error("Failed to get analysis from AI model.");
+        }
+        console.log("AI analysis successful.");
+        return data.choices[0].message.content.trim();
+
+    } catch (error) {
+        console.error("Error calling OpenAI for resume feedback:", error);
+        throw new Error("Could not get feedback from AI."); // Rethrow a user-friendly error
+    }
+}
 
 function detectLanguageSimple(message) {
   if (!message || typeof message !== "string" || message.trim() === "")
@@ -378,6 +462,57 @@ const tools = [
 
 // ... (Your existing endpoints: /stt, /chat, /skills/analyze, /jobs, etc.) ...
 // (No changes needed in section 4)
+app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
+  // Check if file was uploaded
+  if (!req.file) {
+    return res.status(400).json({ error: "No resume file uploaded." });
+  }
+
+  // Optional: Authenticate user if needed (e.g., using Firebase ID token)
+  // const idToken = req.headers.authorization?.split('Bearer ')[1];
+  // if (!idToken) return res.status(401).json({ error: "Unauthorized: Missing token" });
+  // try {
+  //   const decodedToken = await admin.auth().verifyIdToken(idToken);
+  //   req.user = decodedToken; // Add user info to request if needed later
+  // } catch (error) {
+  //   console.error("Error verifying token:", error);
+  //   return res.status(401).json({ error: "Unauthorized: Invalid token" });
+  // }
+
+  const filePath = req.file.path;
+  console.log(`Received resume file for analysis: ${filePath} (Original: ${req.file.originalname})`);
+
+  try {
+    // 1. Extract Text
+    const resumeText = await extractResumeText(filePath);
+
+    // 2. Get Feedback from AI
+    const analysisResult = await getResumeFeedback(resumeText);
+
+    // 3. Send successful response
+    res.json({ analysisResult: analysisResult });
+
+  } catch (error) {
+    console.error("Error during resume analysis:", error);
+    // Send specific error messages based on the error type
+    if (error.message.includes("Unsupported file type") || error.message.includes("Unsupported file format")) {
+        res.status(400).json({ error: error.message });
+    } else if (error.message.includes("too short or empty")) {
+         res.status(400).json({ error: "Could not extract meaningful text from the resume. Please check the file." });
+    }
+     else {
+        res.status(500).json({ error: "Failed to analyze resume. " + error.message });
+    }
+  } finally {
+    // 4. Clean up the uploaded file ALWAYS
+    if (fs.existsSync(filePath)) {
+      fs.unlink(filePath, (err) => {
+        if (err) console.error(`Error deleting temp file ${filePath}:`, err);
+        else console.log(`Deleted temp file: ${filePath}`);
+      });
+    }
+  }
+});
 app.get("/", (req, res) => {
   res.json({ status: "ok", message: "SmartChatbot backend running" });
 });
