@@ -10,6 +10,9 @@ import admin from "firebase-admin";
 import { URL } from "url";
 import { franc } from "franc";
 import langs from "langs";
+import path from 'path';         // <-- ADDED: For file extensions
+import pdf from 'pdf-parse';     // <-- ADDED: For PDF parsing
+import mammoth from 'mammoth';
 
 dotenv.config();
 
