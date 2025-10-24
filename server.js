@@ -11,8 +11,10 @@ import { URL } from "url";
 import { franc } from "franc";
 import langs from "langs";
 import path from 'path';         
-import pkg from "pdf-parse";   // 👈 Add this
-const pdfParse = pkg;          // 👈 Add this    
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
+   
 import mammoth from 'mammoth';
 
 dotenv.config();
