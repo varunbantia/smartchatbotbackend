@@ -6,17 +6,12 @@ import dotenv from "dotenv";
 import multer from "multer";
 import fs from "fs";
 import path from 'path';
-// --- CORRECTED PDF & DOCX IMPORTS ---
-import { createRequire } from "module"; // Helper to use require in ES Modules
-const require = createRequire(import.meta.url); // Create a require function
-const pdfParseFunction = require("pdf-parse"); // Use require, name it distinctively
-import mammoth from 'mammoth';
-// --- END CORRECTIONS ---
 import speech from "@google-cloud/speech";
 import admin from "firebase-admin";
 import { URL } from "url";
 import { franc } from "franc";
 import langs from "langs";
+import { DocumentProcessorServiceClient } from '@google-cloud/documentai';
 
 dotenv.config();
 
@@ -88,7 +83,28 @@ try {
 } catch (err) {
   console.error("🔥 Google STT initialization failed:", err);
 }
+let docAIClient = null;
+const docAIprojectId = googleServiceAccount?.project_id; // Get project ID from credentials
+const docAIlocation = process.env.DOC_AI_LOCATION || 'us'; // e.g., 'us' or 'eu' - MUST MATCH YOUR PROCESSOR REGION
+const docAIprocessorId = process.env.DOC_AI_PROCESSOR_ID; // The ID of your *OCR* processor
 
+try {
+    if (!googleServiceAccount) throw new Error("Missing Google credentials JSON for Document AI");
+    if (!docAIprojectId || !docAIprocessorId) throw new Error ("Missing project_id in credentials or DOC_AI_PROCESSOR_ID in env vars");
+
+    docAIClient = new DocumentProcessorServiceClient({
+        credentials: {
+            client_email: googleServiceAccount.client_email,
+            private_key: googleServiceAccount.private_key,
+        },
+        projectId: docAIprojectId,
+        // Optional: Explicitly set endpoint if needed, based on your processor's region
+        // apiEndpoint: `${docAIlocation}-documentai.googleapis.com`
+    });
+    console.log("✅ Google Document AI client initialized successfully.");
+} catch (err) {
+    console.error("🔥 Google Document AI initialization failed:", err);
+}
 const db = admin.firestore();
 
 // =================================================================
@@ -97,50 +113,43 @@ const db = admin.firestore();
 
 // ... (Your existing detectLanguageSimple, fetchUserPreferences, getCompanyLogo) ...
 // (No changes needed to those helpers)
-async function extractResumeText(filePath) {
-  const fileExtension = path.extname(filePath).toLowerCase();
-  console.log(`Attempting to extract text from file: ${filePath}, extension: ${fileExtension}`);
+async function extractResumeText(filePath, fileMimeType) {
+    if (!docAIClient) {
+        throw new Error("Document AI client is not initialized.");
+    }
+    if (!docAIprojectId || !docAIlocation || !docAIprocessorId) {
+        throw new Error("Document AI configuration is missing.");
+    }
+    console.log(`Sending file to Document AI OCR: ${filePath}, MIME: ${fileMimeType}`);
 
-  try {
-    if (fileExtension === '.pdf') {
-      const dataBuffer = fs.readFileSync(filePath);
-      // --- Use the variable imported via require ---
-      // Check if the required module is the function itself or needs .default
-      const parser = pdfParseFunction.default ? pdfParseFunction.default : pdfParseFunction;
-      if (typeof parser !== 'function') {
-         console.error('!!! pdfParse required module is not a function:', pdfParseFunction);
-         throw new Error('PDF parsing library loaded incorrectly.');
-      }
-      const data = await parser(dataBuffer); // <--- Use the resolved parser
-      console.log(`Extracted ${data.text ? data.text.length : 0} characters from PDF.`);
-      if (!data.text || data.text.trim() === '') {
-        console.warn(`PDF parsed but resulted in empty text: ${filePath}`);
-      }
-      return data.text || ""; // Return empty string if no text
-    } else if (fileExtension === '.docx') {
-      const result = await mammoth.extractRawText({ path: filePath });
-      console.log(`Extracted ${result.value ? result.value.length : 0} characters from DOCX.`);
-      return result.value || "";
-    } else if (fileExtension === '.doc') {
-       console.warn("Extraction from .doc is not directly supported.");
-       throw new Error("Unsupported file format: .doc. Please use .docx or .pdf.");
-    } else if (fileExtension === '.txt') {
-        const text = fs.readFileSync(filePath, 'utf8');
-        console.log(`Read ${text.length} characters from TXT.`);
-        return text;
-    } else {
-      console.warn(`Unsupported file extension: ${fileExtension}`);
-      throw new Error(`Unsupported file type: ${fileExtension}. Please upload PDF, DOCX, or TXT.`);
+    try {
+        const content = fs.readFileSync(filePath).toString('base64');
+        const name = `projects/${docAIprojectId}/locations/${docAIlocation}/processors/${docAIprocessorId}`; // Use OCR Processor ID
+        const request = {
+            name: name,
+            rawDocument: {
+                content: content,
+                mimeType: fileMimeType,
+            },
+        };
+
+        console.log("Calling Document AI OCR processDocument...");
+        const [result] = await docAIClient.processDocument(request);
+        const { document } = result;
+
+        if (!document || !document.text) {
+             console.warn("Document AI OCR processed the file but returned no text.");
+             throw new Error("Could not extract text from the document using OCR.");
+        }
+
+        console.log(`Extracted ${document.text.length} characters via Document AI OCR.`);
+        return document.text; // Return the full extracted text
+
+    } catch (error) {
+        console.error(`Error calling Google Document AI OCR:`, error);
+        const errorMessage = error.details || error.message || "Unknown Document AI OCR error";
+        throw new Error(`Failed to process document with OCR: ${errorMessage}`);
     }
-  } catch (error) {
-    console.error(`!!! Original parsing error for ${filePath}:`, error); // Log original error
-    if (error.message.includes("Unsupported file type") || error.message.includes("Unsupported file format")) throw error;
-    // Add check for the specific TypeError
-    if (error instanceof TypeError && error.message.includes("is not a function")) {
-         throw new Error('Internal server error: PDF parsing library failed to load correctly.');
-    }
-    throw new Error(`Failed to read or parse the resume file.`);
-  }
 }
 
 // --- NEW HELPER: Get Resume Feedback from AI ---
@@ -502,30 +511,31 @@ const tools = [
 // ... (Your existing endpoints: /stt, /chat, /skills/analyze, /jobs, etc.) ...
 // (No changes needed in section 4)
 app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
-  // Check if file was uploaded
   if (!req.file) {
     return res.status(400).json({ error: "No resume file uploaded." });
   }
-
-  // Optional: Authenticate user if needed (e.g., using Firebase ID token)
-  // const idToken = req.headers.authorization?.split('Bearer ')[1];
-  // if (!idToken) return res.status(401).json({ error: "Unauthorized: Missing token" });
-  // try {
-  //   const decodedToken = await admin.auth().verifyIdToken(idToken);
-  //   req.user = decodedToken; // Add user info to request if needed later
-  // } catch (error) {
-  //   console.error("Error verifying token:", error);
-  //   return res.status(401).json({ error: "Unauthorized: Invalid token" });
-  // }
-
   const filePath = req.file.path;
-  console.log(`Received resume file for analysis: ${filePath} (Original: ${req.file.originalname})`);
+  const fileMimeType = req.file.mimetype; // Get MIME type from multer
+  const originalFilename = req.file.originalname;
+  console.log(`Received resume file for analysis: ${filePath} (Original: ${originalFilename}, MIME: ${fileMimeType})`);
+
+  // Basic MIME type check (Document AI supports more types)
+  const allowedMimeTypes = [
+      'application/pdf', 'image/jpeg', 'image/png', 'image/tiff', 'image/gif',
+      'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      // Add others supported by Document AI OCR if needed
+    ];
+  if (!allowedMimeTypes.includes(fileMimeType)) {
+       if (fs.existsSync(filePath)) fs.unlinkSync(filePath); // Clean up
+       console.warn(`Unsupported MIME type for Document AI OCR: ${fileMimeType}`);
+       return res.status(400).json({ error: `Unsupported file type: ${fileMimeType}.` });
+  }
 
   try {
-    // 1. Extract Text
-    const resumeText = await extractResumeText(filePath);
+    // 1. Extract Text (Uses Document AI OCR helper)
+    const resumeText = await extractResumeText(filePath, fileMimeType);
 
-    // 2. Get Feedback from AI
+    // 2. Get Feedback from AI (Remains the same)
     const analysisResult = await getResumeFeedback(resumeText);
 
     // 3. Send successful response
@@ -533,17 +543,9 @@ app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
 
   } catch (error) {
     console.error("Error during resume analysis:", error);
-    // Send specific error messages based on the error type
-    if (error.message.includes("Unsupported file type") || error.message.includes("Unsupported file format")) {
-        res.status(400).json({ error: error.message });
-    } else if (error.message.includes("too short or empty")) {
-         res.status(400).json({ error: "Could not extract meaningful text from the resume. Please check the file." });
-    }
-     else {
-        res.status(500).json({ error: "Failed to analyze resume. " + error.message });
-    }
+    res.status(500).json({ error: error.message || "Failed to analyze resume." });
   } finally {
-    // 4. Clean up the uploaded file ALWAYS
+    // Clean up the uploaded file ALWAYS
     if (fs.existsSync(filePath)) {
       fs.unlink(filePath, (err) => {
         if (err) console.error(`Error deleting temp file ${filePath}:`, err);
