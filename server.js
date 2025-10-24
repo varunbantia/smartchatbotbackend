@@ -11,7 +11,8 @@ import { URL } from "url";
 import { franc } from "franc";
 import langs from "langs";
 import path from 'path';         
-import pdfParse from 'pdf-parse';     
+import pkg from "pdf-parse";   // 👈 Add this
+const pdfParse = pkg;          // 👈 Add this    
 import mammoth from 'mammoth';
 
 dotenv.config();
