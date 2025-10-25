@@ -158,21 +158,27 @@ async function getResumeFeedback(resumeText) {
         throw new Error("Extracted resume text is too short or empty.");
     }
 
-    const analysisPrompt = `Please act as an expert career coach and resume reviewer. Analyze the following resume text and provide constructive feedback. Focus on:
-1.  **Clarity & Conciseness:** Is the language clear and easy to understand? Is there unnecessary jargon?
-2.  **Impact & Achievements:** Does the candidate effectively showcase accomplishments using action verbs and quantifiable results (numbers, percentages)? Suggest specific areas where impact could be highlighted better.
-3.  **Keywords & ATS:** Are relevant keywords likely present for common Applicant Tracking Systems (ATS)? Suggest potential keywords based on typical roles if missing.
-4.  **Formatting & Structure (Inferred):** Based *only* on the text content, does the flow seem logical? (Acknowledge you cannot see the actual visual format).
-5.  **Common Mistakes:** Point out any obvious errors like potential typos (mention if unsure), generic statements, or lack of tailoring (if inferrable).
-6.  **Overall Summary:** A brief concluding thought on the resume's strengths and primary areas for improvement.
-
-Format the feedback clearly using markdown headings or bullet points for readability. Be encouraging but direct.
+const analysisPrompt = `Please act as an expert career coach and resume reviewer. Analyze the following resume text and provide your feedback in **two distinct sections**, using the exact Markdown headings provided below.
 
 Resume Text:
 ---
 ${resumeText}
 ---
+
+## Current Resume Summary
+(Provide a brief, objective summary of what you found in the resume. List the key sections identified, such as 'Summary', 'Skills', 'Experience', and 'Education'. Based on the flow of this text, **also identify its likely resume type**: e.g., Chronological, Functional, or Combination.)
+
+## Actionable Feedback & Suggestions
+(Provide constructive feedback on the text.
+**First, briefly list the sections a strong resume must have** (e.g., Contact Info, Experience, Education, Skills) and note if any are clearly missing from the provided text.
+**Second, provide feedback on the following points:**
+1.  **Clarity & Conciseness:** Is the language clear? Is it easy to read?
+2.  **Impact & Achievements:** Are they using strong action verbs? Are there quantifiable results (numbers, percentages, $)?
+3.  **Keywords & ATS:** Does it seem optimized for Applicant Tracking Systems (ATS) for a potential job role?
+4.  **Mistakes:** Are there obvious typos, grammatical errors, or unprofessional elements?
+5.  **Suggestions:** List 3-5 specific, actionable bullet points on what to improve in the text.)
 `;
+    // --- END UPDATED PROMPT ---
 
     try {
         const response = await fetch("https://api.openai.com/v1/chat/completions", {
