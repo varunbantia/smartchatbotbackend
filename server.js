@@ -158,26 +158,62 @@ async function getResumeFeedback(resumeText) {
         throw new Error("Extracted resume text is too short or empty.");
     }
 
-const analysisPrompt = `Please act as an expert career coach and resume reviewer. Analyze the following resume text and provide your feedback in **two distinct sections**, using the exact Markdown headings provided below.
+const analysisPrompt = `
+You are an **expert career strategist, HR consultant, and professional resume reviewer** with 15+ years of experience helping candidates optimize their resumes for top global employers (FAANG, Fortune 500, startups, and government roles).
+
+Your task: Critically analyze the following resume text and produce a **comprehensive, structured report** in clear Markdown format. Focus on professionalism, clarity, ATS compatibility, and impact.
 
 Resume Text:
 ---
 ${resumeText}
 ---
 
-## Current Resume Summary
-(Provide a brief, objective summary of what you found in the resume. List the key sections identified, such as 'Summary', 'Skills', 'Experience', and 'Education'. Based on the flow of this text, **also identify its likely resume type**: e.g., Chronological, Functional, or Combination.)
+# Resume Overview
+Provide a concise summary of the resume. Identify the main sections (e.g., Summary, Experience, Skills, Education, Projects, Certifications).
+- Determine the **resume format type**: Chronological, Functional, or Combination.
+- Highlight the **industry or job role** it appears suited for.
+- Assess overall tone and presentation quality (e.g., formal, technical, academic, creative).
 
-## Actionable Feedback & Suggestions
-(Provide constructive feedback on the text.
-**First, briefly list the sections a strong resume must have** (e.g., Contact Info, Experience, Education, Skills) and note if any are clearly missing from the provided text.
-**Second, provide feedback on the following points:**
-1.  **Clarity & Conciseness:** Is the language clear? Is it easy to read?
-2.  **Impact & Achievements:** Are they using strong action verbs? Are there quantifiable results (numbers, percentages, $)?
-3.  **Keywords & ATS:** Does it seem optimized for Applicant Tracking Systems (ATS) for a potential job role?
-4.  **Mistakes:** Are there obvious typos, grammatical errors, or unprofessional elements?
-5.  **Suggestions:** List 3-5 specific, actionable bullet points on what to improve in the text.)
+# Strengths & Positive Highlights
+List 3–5 strengths observed in the resume. Focus on clarity, structure, tone, and presentation.
+Use bullet points and explain **why** each strength adds value.
+
+# Weaknesses & Missing Elements
+List the key weaknesses or gaps (missing sections, poor formatting, lack of achievements, etc.).
+Mention **which essential sections** (Contact Info, Summary, Skills, Experience, Education, Projects, Certifications) are missing or incomplete.
+
+# Section-by-Section Evaluation
+For each section (if present), evaluate:
+- **Summary:** Does it clearly define professional identity and career goals?
+- **Skills:** Are they specific, relevant, and ATS-friendly? Are they grouped logically?
+- **Experience:** Are roles described with action verbs and measurable outcomes?
+- **Education:** Is the format consistent and relevant?
+- **Projects/Certifications:** Are they meaningful and add credibility?
+
+# ATS & Keyword Optimization
+Analyze whether the resume is likely to **pass an Applicant Tracking System (ATS)** scan.
+- Identify missing **industry-relevant keywords**.
+- Suggest 5–10 keywords the candidate should integrate based on their likely field.
+
+# Language, Clarity & Impact
+Critique the tone, grammar, and flow:
+- Is the writing concise and professional?
+- Are bullet points impactful?
+- Highlight overused phrases or filler words.
+- Suggest stronger verbs or phrasing.
+
+# Actionable Recommendations
+Provide **5–7 detailed, actionable suggestions** to enhance the resume’s quality and impact.
+Examples: improve structure, add measurable metrics, rewrite summary, etc.
+Each recommendation should start with a bold heading (e.g., **Add Measurable Results**) followed by 1–2 lines of explanation.
+
+# Final Verdict
+Summarize your professional opinion in 3–5 sentences:
+- Overall impression (Professional / Needs Major Work / Excellent)
+- Estimated ATS score (out of 100)
+- Hiring-readiness level (e.g., Ready for submission, Needs moderate revisions, Major rewrite needed)
 `;
+
     // --- END UPDATED PROMPT ---
 
     try {
