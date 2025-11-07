@@ -1109,13 +1109,20 @@ app.get("/counseling/get-specializations", async (req, res) => {
   }
   console.log(`[Get Specializations] Request received for: ${degree}`);
 
-  const prompt = `
-        List the top 30-40 most common specializations for a "${degree}" degree.
-        If the degree is very general (like "Bachelor of Arts") list common majors.
-        If the degree is already specific (like "PhD"), list common research areas.
-        Respond ONLY with a valid JSON array of strings.
-        Example: ["Computer Science", "Electrical Engineering", "Data Science"]
-    `;
+ const prompt = `
+You are an academic data expert. Your task is to list the top 30–40 most accurate and commonly recognized specializations, majors, or research areas for the degree: "${degree}".
+
+Guidelines:
+1. If "${degree}" is a broad or general degree (e.g., "Bachelor of Arts", "Bachelor of Science", "Master of Engineering"), return common majors or concentrations typically offered under that degree type.
+2. If "${degree}" is a specific or professional degree (e.g., "MBA", "PhD in Physics", "Doctor of Medicine", "Master of Computer Science"), list precise and realistic specializations, subfields, or research areas directly relevant to it.
+3. Use globally recognized academic or industry terminology.
+4. Avoid duplicate or vague entries. Focus on accuracy and diversity across disciplines.
+5. Output ONLY a valid JSON array of strings. Do not include any explanation, commentary, or formatting outside the JSON.
+
+Example:
+["Computer Science", "Data Analytics", "Electrical Engineering", "Mechanical Engineering", "Artificial Intelligence"]
+`;
+
 
   try {
     const openAiResponse = await fetch(
@@ -1137,25 +1144,39 @@ app.get("/counseling/get-specializations", async (req, res) => {
     const data = await openAiResponse.json();
     const content = data.choices[0].message.content;
 
-    // Try to parse the JSON array
+    
     const specializationsList = JSON.parse(content);
 
-    res.json({ specializations: specializationsList }); // Send the array
+    res.json({ specializations: specializationsList });
   } catch (err) {
     console.error(`Error fetching specializations for ${degree}:`, err);
-    // If it fails, just return an empty list so the app hides the field
-    res.json({ specializations: [] });
+   
   }
 });
 
 app.get("/counseling/get-degrees", async (req, res) => {
   console.log("[Get Degrees] Request received.");
 
-  const prompt = `
-        List the 120 most common academic and professional degrees for international study, sorted alphabetically.
-        Respond ONLY with a valid JSON array of strings.
-        Example: ["Bachelor of Arts", "Bachelor of Science", "Master of Business Administration"]
-    `;
+ const prompt = `
+You are a global higher-education data expert specializing in international academic programs.
+
+Your task:
+List **exactly 120** of the most **commonly recognized academic and professional degrees worldwide**, across undergraduate, postgraduate, and doctoral levels.
+
+Requirements:
+1. Include both **general degree types** (e.g., "Bachelor of Science") and **professional/specialized degrees** (e.g., "Doctor of Medicine", "Master of Public Health").
+2. Cover a wide range of disciplines — STEM, business, humanities, law, medicine, arts, social sciences, and emerging fields (e.g., data science, AI, cybersecurity).
+3. Use **complete official degree names** (not abbreviations like B.Sc. or Ph.D.).
+4. Sort the array **alphabetically**.
+5. Remove duplicates or near-duplicates.
+6. Focus on degrees that are **globally offered or internationally recognized** by universities.
+7. Respond **ONLY** with a **valid JSON array of strings**, containing exactly 120 items.
+8. Do **not** include explanations, numbers, comments, or formatting outside the JSON.
+
+Example (structure only):
+["Bachelor of Arts", "Bachelor of Science", "Master of Business Administration", "Doctor of Philosophy"]
+`;
+
 
   try {
     const openAiResponse = await fetch(
@@ -1285,11 +1306,29 @@ app.get("/interview-prep/questions", async (req, res) => {
   }
 
   const prompt = `
-        You are an expert interview coach.
-        Generate ${count} ${category} interview questions for a ${jobRole} candidate.
-        Respond ONLY with a valid JSON array of strings.
-        Example: ["Question 1", "Question 2"]
-    `;
+You are a world-class interview coach and hiring strategist with deep expertise in global recruitment practices.
+
+Your task:
+Generate **${count}** highly relevant **${category}** interview questions tailored specifically for a **${jobRole}** candidate.
+
+### Requirements:
+1. The questions must be **authentic, practical, and insight-driven**, matching real-world interview standards for ${jobRole}.
+2. Maintain a **balanced mix** of difficulty levels — from foundational to challenging — suitable for assessing knowledge, problem-solving, and communication.
+3. If the category implies a question style, follow it strictly:
+   - "Technical" → Deep domain questions requiring reasoning or applied knowledge.
+   - "HR" or "Behavioral" → Situational or personality-based questions (e.g., STAR format).
+   - "Managerial" → Leadership, decision-making, and scenario-based judgment questions.
+   - "Aptitude" → Logical reasoning or quantitative thinking questions.
+4. Avoid duplicates, filler questions, or generic “Tell me about yourself”-type prompts.
+5. Questions must be **clear, concise, and free of bias** — phrased naturally, as a professional interviewer would.
+6. Return **ONLY** a valid JSON array of strings — no numbering, formatting, or explanations.
+7. Ensure the array has **exactly ${count} questions**.
+8. Do **not** include any text, comments, or examples outside the JSON.
+
+### Example Format:
+["What is polymorphism in object-oriented programming?", "Describe a time you resolved a conflict within your team."]
+`;
+
 
   try {
     const content = await simpleOpenAICall(prompt, AI_MODEL, 0.7);
@@ -1301,11 +1340,23 @@ app.get("/interview-prep/questions", async (req, res) => {
   }
 });
 app.get("/interview-prep/daily-tip", async (req, res) => {
-  const prompt = `
-        You are an expert career coach. 
-        Provide one concise, actionable interview tip (2 sentences max).
-        Respond ONLY with the text of the tip.
-    `;
+ const prompt = `
+You are a world-class career coach and interview strategist with deep experience mentoring candidates across global industries.
+
+Your task:
+Provide **one** powerful, practical, and immediately actionable **interview tip** that helps candidates improve performance, confidence, or impact during interviews.
+
+### Requirements:
+1. The tip must be **specific, realistic, and high-value** — not generic advice like “Be confident” or “Research the company.”
+2. Keep it **concise (maximum 2 sentences)** and **professionally worded**.
+3. Focus on *actionable behavior or mindset shifts* proven to make a measurable difference in interviews.
+4. Tailor it to apply broadly across most job roles and industries.
+5. Respond **ONLY** with the tip text — no titles, labels, introductions, or formatting.
+
+Example Output:
+“Before answering, pause for two seconds to collect your thoughts — it signals confidence and clarity to interviewers.”
+`;
+
   try {
     const tip = await simpleOpenAICall(prompt, AI_MODEL, 0.8);
     res.json({ tip: tip });
@@ -1323,17 +1374,40 @@ app.post("/interview-prep/generate-email", async (req, res) => {
   }
 
   const prompt = `
-        You are a professional career writer. 
-        Write a concise thank-you email template for an interview for a ${jobTitle} position at ${companyName}.
-        The tone should be ${tone}.
-        Include placeholders like [Interviewer Name] and [Specific Point Discussed].
-        Respond ONLY with the full email text (including subject).
-        Example:
-        Subject: Thank You - Interview for [Job Title]
+You are an award-winning professional career writer and communication strategist.
 
-        Dear [Interviewer Name],
-        ...
-    `;
+Your task:
+Write a **concise, polished thank-you email template** for a **${jobTitle}** position at **${companyName}**.
+
+### Requirements:
+1. The tone must be **${tone}**, consistent, and natural (e.g., professional, warm, appreciative, or formal depending on input).
+2. The email should feel **genuine and personalized**, not robotic — appropriate for sending to a real interviewer.
+3. Include these placeholders:
+   - [Interviewer Name]
+   - [Specific Point Discussed]
+   - [Your Name]
+   - [Job Title]
+   - [Company Name]
+4. Structure:
+   - **Subject line** (short, relevant, professional)
+   - **Body** (3–5 sentences max)
+   - **Professional closing**
+5. The email must:
+   - Express appreciation for the opportunity and interviewer’s time.
+   - Reference [Specific Point Discussed] naturally.
+   - Reaffirm interest in the role and cultural fit.
+   - End with a courteous closing line.
+6. The final response must be **ONLY the full email text** (including subject line) — no explanations, commentary, or Markdown formatting.
+
+### Example Structure:
+Subject: Thank You – Interview for [Job Title]
+
+Dear [Interviewer Name],
+Thank you for taking the time to meet with me regarding the [Job Title] role at [Company Name]. I especially appreciated our discussion about [Specific Point Discussed], which strengthened my enthusiasm for contributing to your team. I look forward to the possibility of joining [Company Name] and adding value to your goals.  
+Warm regards,  
+[Your Name]
+`;
+
   try {
     const template = await simpleOpenAICall(prompt, AI_MODEL, 0.5);
     res.json({ template: template });
@@ -1373,12 +1447,32 @@ app.get("/interview-prep/tips-list", async (req, res) => {
   const { count = 20 } = req.query;
 
   const prompt = `
-        You are an expert career coach.
-        Generate ${count} unique, concise, and actionable interview tips.
-        Each tip should be one or two sentences.
-        Respond ONLY with a valid JSON array of strings.
-        Example: ["Tip 1...", "Tip 2...", "Tip 3..."]
-    `;
+You are a world-class career coach and interview strategist with years of experience training candidates for global companies across industries.
+
+Your task:
+Generate **${count}** unique, high-impact, and **actionable interview tips** that help candidates perform better in job interviews.
+
+### Requirements:
+1. Each tip must be **concise (1–2 sentences)** and **practically useful** — something a real candidate can apply immediately.
+2. Tips must be **unique, realistic, and non-generic** — avoid vague advice like “Be confident” or “Dress professionally.”
+3. Focus on a balance of **behavioral**, **technical**, and **communication-related** insights that apply broadly across most roles.
+4. Each tip should teach something **specific** — for example:
+   - How to structure an answer effectively  
+   - How to show confidence through body language  
+   - How to ask insightful questions  
+   - How to handle difficult questions or rejections  
+5. Language must be **clear, motivational, and professional** — no filler, clichés, or redundancy.
+6. Respond **ONLY** with a valid **JSON array of strings**, containing exactly **${count}** items.
+7. Do **not** include numbering, markdown, explanations, or extra text — only the clean JSON array.
+
+### Example Output:
+[
+  "Pause briefly before answering to show composure and give yourself time to think.",
+  "When discussing weaknesses, focus on how you've actively worked to improve them.",
+  "Use specific examples to demonstrate your skills rather than broad statements."
+]
+`;
+
 
   try {
     let tipsJson = await simpleOpenAICall(prompt, AI_MODEL, 0.8);
@@ -1405,19 +1499,36 @@ app.post("/interview-prep/evaluate-star", async (req, res) => {
   }
 
   const prompt = `
-        You are an expert HR manager. Evaluate this STAR method answer:
-        Situation: ${situation}
-        Task: ${task}
-        Action: ${action}
-        Result: ${result}
+You are a highly experienced HR manager and certified behavioral interviewer with deep expertise in STAR (Situation, Task, Action, Result) evaluation.
 
-        Provide concise feedback. Respond ONLY with a valid JSON object in this exact format:
-        {
-            "strength": "What was strong about this answer (3-6 sentences).",
-            "weakness": "What was weak or missing (3-6 sentences).",
-            "suggestion": "A specific suggestion for improvement (3-6 sentences)."
-        }
-    `;
+Your task:
+Assess the following candidate’s STAR response objectively and professionally.
+
+### Candidate Response
+- **Situation:** ${situation}
+- **Task:** ${task}
+- **Action:** ${action}
+- **Result:** ${result}
+
+### Evaluation Guidelines
+1. Analyze how well the response demonstrates **clarity, relevance, impact, and reflection**.
+2. Consider whether the candidate effectively:
+   - Described a **specific, relevant situation** (not hypothetical or vague)
+   - Clarified their **individual contribution** (not just the team’s)
+   - Showed **initiative and problem-solving ability**
+   - Quantified or clearly communicated **results and impact**
+3. Avoid generic comments. Provide nuanced, professional-level feedback reflecting real HR judgment.
+4. Maintain a constructive, supportive tone focused on **growth and improvement**.
+5. Output **only** a valid JSON object using this exact schema:
+   {
+     "strength": "Detailed yet concise analysis of what worked well (3–6 sentences).",
+     "weakness": "Detailed yet concise critique of what was weak, unclear, or missing (3–6 sentences).",
+     "suggestion": "Actionable, specific advice to improve future STAR answers (3–6 sentences)."
+   }
+
+Do not include any commentary, markdown, or text outside the JSON object.
+`;
+
   try {
     let feedbackJson = await simpleOpenAICall(prompt, "gpt-4o", 0.4);
 
@@ -1442,14 +1553,27 @@ app.post("/interview-prep/evaluate-answer", async (req, res) => {
   }
 
   const prompt = `
-        You are an interview coach. 
-        The question was: "${question}"
-        The user's answer was: "${answer}"
+You are a professional interview coach with expertise in communication, behavioral psychology, and candidate assessment.
 
-        Provide concise, constructive feedback on the answer's clarity, structure, and impact (3-4 sentences total).
-        Start with one positive point, then one area for improvement.
-        Respond ONLY with the feedback text.
-    `;
+Your task:
+Evaluate the candidate’s response to the following interview question.
+
+### Input
+- **Question:** "${question}"
+- **Answer:** "${answer}"
+
+### Feedback Requirements
+1. Provide **concise, balanced, and actionable feedback** (total 3–4 sentences).
+2. Start with a **genuine positive observation** highlighting what the candidate did well (e.g., tone, relevance, structure, or confidence).
+3. Follow with a **constructive improvement point**, explaining briefly how the answer could be more effective (e.g., clearer examples, stronger impact, better structure, or measurable results).
+4. Feedback must sound **human, specific, and professional**, not robotic or generic.
+5. Focus on **clarity, logical flow, and overall impact** — avoid rephrasing the answer itself.
+6. Respond **ONLY** with the feedback text (no labels, bullet points, or formatting).
+
+Example Output:
+"Your answer clearly showed enthusiasm and strong communication skills. However, you could improve by structuring your response using the STAR method to make your achievements more measurable and memorable."
+`;
+
   try {
     const feedback = await simpleOpenAICall(prompt, AI_MODEL, 0.5);
     res.json({ feedback: feedback });
@@ -1529,31 +1653,45 @@ app.get("/interview-prep/technical-questions", async (req, res) => {
     );
   }
   const prompt = `
-        You are an expert technical interviewer and career coach.
-        A candidate has the job role of "${jobRole}" and lists these skills: "${skills}".
-        
-        Generate ${count} relevant technical interview questions for this candidate.
-        For each question, find the single **best, high-quality URL** on the internet to practice or learn about that specific question.
-        This could be a link to LeetCode, HackerRank, GeeksforGeeks, a technical blog, or official documentation.
-        The URL must be direct and fully-qualified (e.g., "https://leetcode.com/problems/reverse-linked-list/").
+You are a senior technical interviewer and certified career coach with extensive experience preparing candidates for top-tier technical roles.
 
-        Respond ONLY with a valid JSON array of objects.
-        Example format:
-        [
-          {
-            "question": "Reverse a Linked List",
-            "url": "https://leetcode.com/problems/reverse-linked-list/"
-          },
-          {
-            "question": "What is the difference between an abstract class and an interface in Java?",
-            "url": "https://www.geeksforgeeks.org/difference-between-abstract-class-and-interface-in-java/"
-          },
-          {
-            "question": "Binary Tree Inorder Traversal",
-            "url": "https://www.hackerrank.com/challenges/tree-inorder-traversal/problem"
-          }
-        ]
-    `;
+Your task:
+Generate **${count}** realistic and relevant **technical interview questions** for a candidate applying for a **${jobRole}** role, who lists these skills: **${skills}**.
+
+### Question Requirements:
+1. Each question must directly test or relate to **core technical competencies** in the candidate’s listed skills.
+2. Include a balanced variety of topics:
+   - Conceptual and theory-based questions
+   - Coding or algorithmic problems
+   - System design or practical scenario questions (if applicable)
+3. The questions should be **clear, industry-standard, and aligned with actual interview expectations** for the role.
+4. Avoid trivial or duplicate questions.
+
+### URL Requirements:
+1. For each question, provide **exactly one** verified, high-quality URL where the candidate can **learn or practice** that specific topic.
+2. Acceptable sources: **LeetCode**, **HackerRank**, **GeeksforGeeks**, **freeCodeCamp**, **official documentation (e.g., Java, Python, React)**, or **respected tech blogs**.
+3. The URL must be:
+   - **Direct and specific** (no homepages, category pages, or search result links)
+   - **Relevant** to the question content (not a random tutorial)
+   - **Fully-qualified**, starting with "https://"
+4. Each question and URL must form a **logical pair** — i.e., the resource must genuinely teach or help solve that exact question.
+
+### Output Format:
+Respond **only** with a valid JSON array of exactly **${count} objects**, using the structure:
+[
+  {
+    "question": "Question text here",
+    "url": "https://..."
+  },
+  ...
+]
+
+### Output Rules:
+- Do NOT include any explanations, markdown, comments, or extra text.
+- Ensure all URLs are real, relevant, and fully functional.
+- Ensure all questions are unique and directly related to ${jobRole} and ${skills}.
+`;
+
 
   try {
     let questionsJson = await simpleOpenAICall(prompt, "gpt-4o", 0.6);
