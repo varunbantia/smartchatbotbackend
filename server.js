@@ -953,7 +953,9 @@ Do not include explanations, numbers, or symbols.
     return res.status(500).json({ error: "Skill analysis failed." });
   }
 });
-
+app.get("/ping", (req, res) => {
+  res.status(200).json({ status: "ok", message: "Server is awake" });
+});
 app.get("/jobs", async (req, res) => {
   const { uid, query, employment_types } = req.query;
   try {
