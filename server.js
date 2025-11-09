@@ -409,7 +409,6 @@ function getExperience(job) {
 
   return "Not Disclosed";
 }
-
 const findJobs = async (params) => {
   console.log("[findJobs] Checking API Key...");
   if (!process.env.JSEARCH_API_KEY) {
@@ -421,14 +420,20 @@ const findJobs = async (params) => {
   console.log("[findJobs] API Key is loaded.");
 
   try {
-    const { query, employment_types } = params || {};
+    // ⬇️ MODIFICATION 1: Get jobLimit, default to 50 if not provided
+    const { query, employment_types, jobLimit = 50 } = params || {};
     if (!query || query.trim() === "") return [];
 
     const BASE_URL = "https://jsearch.p.rapidapi.com/search";
-    const totalPages = 5;
+
+    // ⬇️ MODIFICATION 2: Calculate pages based on 10 jobs/page
+    // If jobLimit is 5, this fetches 1 page. If 50, it fetches 5 pages.
+    const totalPages = Math.ceil(jobLimit / 10);
     const allResults = [];
 
-    console.log(`[findJobs] Starting multi-page fetch for query: "${query}"`);
+    console.log(
+      `[findJobs] Starting multi-page fetch for query: "${query}", pages: ${totalPages}`
+    );
 
     for (let page = 1; page <= totalPages; page++) {
       const url = new URL(BASE_URL);
@@ -479,7 +484,8 @@ const findJobs = async (params) => {
       return [];
     }
     const jobs = await Promise.all(
-      allResults.slice(0, 100).map(async (job) => {
+      // ⬇️ MODIFICATION 3: Slice the final array to the exact jobLimit
+      allResults.slice(0, jobLimit).map(async (job) => {
         const logoUrl = await getCompanyLogo(
           job.employer_name,
           job.employer_logo
@@ -508,7 +514,7 @@ const findJobs = async (params) => {
     );
 
     console.log(
-      `[findJobs] ✅ Success: Found ${jobs.length} jobs across ${totalPages} pages.`
+      `[findJobs] ✅ Success: Found ${jobs.length} jobs (limit was ${jobLimit}).`
     );
     return jobs;
   } catch (err) {
@@ -729,9 +735,6 @@ Follow these rules with absolute consistency:
 Your goal: Deliver expert guidance, meaningful resources, and trustworthy career support — every single time, with accuracy, empathy, and professionalism.
 `;
 
-
-
-
     const transformedHistory = (Array.isArray(history) ? history : [])
       .filter((m) => m && (m.message || m.text))
       .map((m) => {
@@ -794,7 +797,12 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
 
         let toolResult = null;
         if (functionName === "find_jobs") {
-          toolResult = await findJobs(functionArgs);
+          console.log("Chat is calling find_jobs, setting limit to 5.");
+          const chatJobParams = {
+            ...functionArgs, // (e.g., query: "java developer")
+            jobLimit: 5, // Add our hard-coded limit
+          };
+          toolResult = await findJobs(chatJobParams);
         } else if (functionName === "get_user_info") {
           toolResult = await fetchUserPreferences(uid);
         } else {
@@ -960,7 +968,16 @@ app.get("/jobs", async (req, res) => {
       queryToUse = "jobs in India";
     }
 
-    const jobsResult = await findJobs({ query: queryToUse, employment_types });
+    // ⬇️ MODIFICATION HERE ⬇️
+    // Bundle params into an object and set the 50 job limit
+    const jobPageParams = {
+      query: queryToUse,
+      employment_types,
+      jobLimit: 50,
+    };
+    const jobsResult = await findJobs(jobPageParams);
+    // ⬆️ END MODIFICATION ⬆️
+
     return res.json(jobsResult);
   } catch (err) {
     console.error("Error in /jobs:", err);
@@ -1138,7 +1155,7 @@ app.get("/counseling/get-specializations", async (req, res) => {
   }
   console.log(`[Get Specializations] Request received for: ${degree}`);
 
- const prompt = `
+  const prompt = `
 You are an academic data expert. Your task is to list the top 30–40 most accurate and commonly recognized specializations, majors, or research areas for the degree: "${degree}".
 
 Guidelines:
@@ -1151,7 +1168,6 @@ Guidelines:
 Example:
 ["Computer Science", "Data Analytics", "Electrical Engineering", "Mechanical Engineering", "Artificial Intelligence"]
 `;
-
 
   try {
     const openAiResponse = await fetch(
@@ -1173,20 +1189,18 @@ Example:
     const data = await openAiResponse.json();
     const content = data.choices[0].message.content;
 
-    
     const specializationsList = JSON.parse(content);
 
     res.json({ specializations: specializationsList });
   } catch (err) {
     console.error(`Error fetching specializations for ${degree}:`, err);
-   
   }
 });
 
 app.get("/counseling/get-degrees", async (req, res) => {
   console.log("[Get Degrees] Request received.");
 
- const prompt = `
+  const prompt = `
 You are a global higher-education data expert specializing in international academic programs.
 
 Your task:
@@ -1205,7 +1219,6 @@ Requirements:
 Example (structure only):
 ["Bachelor of Arts", "Bachelor of Science", "Master of Business Administration", "Doctor of Philosophy"]
 `;
-
 
   try {
     const openAiResponse = await fetch(
@@ -1358,7 +1371,6 @@ Generate **${count}** highly relevant **${category}** interview questions tailor
 ["What is polymorphism in object-oriented programming?", "Describe a time you resolved a conflict within your team."]
 `;
 
-
   try {
     const content = await simpleOpenAICall(prompt, AI_MODEL, 0.7);
     const questionsList = JSON.parse(content); // The prompt forces JSON
@@ -1369,7 +1381,7 @@ Generate **${count}** highly relevant **${category}** interview questions tailor
   }
 });
 app.get("/interview-prep/daily-tip", async (req, res) => {
- const prompt = `
+  const prompt = `
 You are a world-class career coach and interview strategist with deep experience mentoring candidates across global industries.
 
 Your task:
@@ -1501,7 +1513,6 @@ Generate **${count}** unique, high-impact, and **actionable interview tips** tha
   "Use specific examples to demonstrate your skills rather than broad statements."
 ]
 `;
-
 
   try {
     let tipsJson = await simpleOpenAICall(prompt, AI_MODEL, 0.8);
@@ -1720,7 +1731,6 @@ Respond **only** with a valid JSON array of exactly **${count} objects**, using 
 - Ensure all URLs are real, relevant, and fully functional.
 - Ensure all questions are unique and directly related to ${jobRole} and ${skills}.
 `;
-
 
   try {
     let questionsJson = await simpleOpenAICall(prompt, "gpt-4o", 0.6);
