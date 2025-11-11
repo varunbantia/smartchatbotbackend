@@ -858,10 +858,8 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
   }
 });
 
-// ... (your other express setup)
-
 app.get("/skills/analyze", async (req, res) => {
-  // ⬇️ 1. Get both uid and the optional jobRole from the query
+  // 1. Get both uid and the optional jobRole from the query
   const { uid, jobRole: queryJobRole } = req.query;
 
   if (!uid) return res.status(400).json({ error: "User ID required." });
@@ -872,13 +870,12 @@ app.get("/skills/analyze", async (req, res) => {
       return res.status(404).json({ error: "User profile not found." });
     }
 
-    // ⬇️ 2. Determine the job role to use
-    //    Priority:
-    //    1. The job role from the query (search)
-    //    2. The user's saved job role (profile analysis)
+    // 2. Determine the job role to use
+    //    Priority: 1. The job role from the query (search)
+    //              2. The user's saved job role (profile analysis)
     const jobRole = queryJobRole || userPrefs.jobRole;
 
-    // ⬇️ 3. Handle case where no job role is found anywhere
+    // 3. Handle case where no job role is found anywhere
     if (!jobRole) {
       return res
         .status(404)
@@ -891,70 +888,77 @@ app.get("/skills/analyze", async (req, res) => {
       .map((s) => s.trim())
       .filter(Boolean);
 
-    // The rest of your function logic remains exactly the same!
-    // It will now use the correct `jobRole` (either from query or profile).
+    // 4. --- NEW SINGLE PROMPT ---
+    // Ask for all skills AND learning resources in one go, formatted as JSON.
+    const combinedQuestion = `
+Analyze the skills for a '${jobRole}'.
+1. List the top 12 most important technical skills.
+2. For the all skills in that list, provide one high-quality, public URL to a learning resource (like a tutorial, documentation, or course).
 
-    const skillsQuestion = `
-List the top 12 most important technical skills for a '${jobRole}'.
-Respond ONLY with a comma-separated list.
-Each skill must be **only two or three words maximum** (e.g., 'Java', 'React Native', 'Data Analysis').
-Do not include explanations, numbers, or symbols.
+Respond with ONLY a single valid JSON object in the following format:
+{
+  "skill_list": ["Skill 1", "Skill 2", "Skill 3", ...],
+  "learning_links": {
+    "Skill 1": "https://url.for.skill.1",
+    "Skill 2": "https://url.for.skill.2",
+    "Skill 5": "https://url.for.skill.5"
+  }
+}
+Do not include any other text, explanations, or markdown ticks.
 `;
-    const skillsResp = await fetch(
-      "https://api.openai.com/v1/chat/completions",
+
+    // 5. --- SINGLE API CALL ---
+    // Using gpt-4o for better JSON reliability, like your /counseling route
+    const openAIResp = await fetch(
+      "https.api.openai.com/v1/chat/completions",
       {
-        // ... (your headers and body)
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: AI_MODEL,
-          messages: [{ role: "user", content: skillsQuestion }],
+          model: "gpt-4o", 
+          messages: [{ role: "user", content: combinedQuestion }],
+          // This tells the AI to force JSON output
+          response_format: { type: "json_object" }, 
         }),
       }
     );
-    const skillsData = await skillsResp.json();
-    const requiredSkillsText = skillsData?.choices?.[0]?.message?.content || "";
-    const requiredSkills = requiredSkillsText
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-    const missingSkills = requiredSkills.filter((s) => !userSkills.includes(s));
 
-    const learningResources = {};
-    for (const skill of missingSkills) {
-      // ... (your loop to fetch resources)
-      const resourceQuestion = `Provide a reputable, public URL for learning '${skill}'. Reply only with the URL.`;
-      try {
-        const resourceResp = await fetch(
-            "https://api.openai.com/v1/chat/completions",
-             { /* ... */ }
-        );
-        const resourceData = await resourceResp.json();
-        let url = (resourceData?.choices?.[0]?.message?.content || "").trim();
-        // ... (your URL cleaning logic)
-        url = url.replace(/["'`\s]/g, "");
-        if (url && url.includes(".")) {
-          if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            url = "https://" + url;
-          }
-          if (url.startsWith("http")) {
-            learningResources[skill] = url;
-          }
-        }
-      } catch (err) {
-        console.error(`Error fetching resource for ${skill}:`, err.message);
-      }
+    const aiData = await openAIResp.json();
+    const aiContent = aiData?.choices?.[0]?.message?.content;
+
+    if (!aiContent) {
+      throw new Error("Empty response from AI");
     }
 
+    // 6. --- PARSE THE JSON RESPONSE ---
+    let parsedData;
+    try {
+        parsedData = JSON.parse(aiContent); // The AI will return a valid JSON string
+    } catch (e) {
+        console.error("Failed to parse AI JSON response:", aiContent);
+        throw new Error("AI returned invalid JSON.");
+    }
+
+    const requiredSkills = (parsedData.skill_list || []).map(s => s.trim().toLowerCase());
+    // This will now be populated!
+    const learningResources = parsedData.learning_links || {}; 
+
+    // 7. --- CALCULATE MISSING SKILLS (same as before) ---
+    const missingSkills = requiredSkills.filter(
+      (s) => !userSkills.includes(s)
+    );
+
+    // 8. --- RETURN THE FULL OBJECT ---
     return res.json({
-      jobRole, // This will correctly return the role that was analyzed
+      jobRole,
       requiredSkills,
       missingSkills,
-      learningResources,
+      learningResources, // This will no longer be empty
     });
+
   } catch (err) {
     console.error("Error in /skills/analyze:", err);
     return res.status(500).json({ error: "Skill analysis failed." });
