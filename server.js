@@ -910,7 +910,7 @@ Do not include any other text, explanations, or markdown ticks.
     // 5. --- SINGLE API CALL ---
     // Using gpt-4o for better JSON reliability, like your /counseling route
     const openAIResp = await fetch(
-      "https.api.openai.com/v1/chat/completions",
+      "https://api.openai.com/v1/chat/completions",
       {
         method: "POST",
         headers: {
