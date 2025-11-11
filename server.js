@@ -858,22 +858,41 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
   }
 });
 
+// ... (your other express setup)
+
 app.get("/skills/analyze", async (req, res) => {
-  const { uid } = req.query;
+  // ⬇️ 1. Get both uid and the optional jobRole from the query
+  const { uid, jobRole: queryJobRole } = req.query;
+
   if (!uid) return res.status(400).json({ error: "User ID required." });
+
   try {
     const userPrefs = await fetchUserPreferences(uid);
-    if (!userPrefs || !userPrefs.jobRole)
+    if (!userPrefs) {
+      return res.status(404).json({ error: "User profile not found." });
+    }
+
+    // ⬇️ 2. Determine the job role to use
+    //    Priority:
+    //    1. The job role from the query (search)
+    //    2. The user's saved job role (profile analysis)
+    const jobRole = queryJobRole || userPrefs.jobRole;
+
+    // ⬇️ 3. Handle case where no job role is found anywhere
+    if (!jobRole) {
       return res
         .status(404)
-        .json({ error: "User profile or jobRole missing." });
+        .json({ error: "Job role missing. No query role provided and no profile role set." });
+    }
 
     const userSkills = (userPrefs.skills || "")
       .toLowerCase()
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
-    const jobRole = userPrefs.jobRole;
+
+    // The rest of your function logic remains exactly the same!
+    // It will now use the correct `jobRole` (either from query or profile).
 
     const skillsQuestion = `
 List the top 12 most important technical skills for a '${jobRole}'.
@@ -884,6 +903,7 @@ Do not include explanations, numbers, or symbols.
     const skillsResp = await fetch(
       "https://api.openai.com/v1/chat/completions",
       {
+        // ... (your headers and body)
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -905,30 +925,17 @@ Do not include explanations, numbers, or symbols.
 
     const learningResources = {};
     for (const skill of missingSkills) {
+      // ... (your loop to fetch resources)
       const resourceQuestion = `Provide a reputable, public URL for learning '${skill}'. Reply only with the URL.`;
       try {
         const resourceResp = await fetch(
-          "https://api.openai.com/v1/chat/completions",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-            },
-
-            body: JSON.stringify({
-              model: AI_MODEL,
-              messages: [{ role: "user", content: resourceQuestion }],
-            }),
-          }
+            "https://api.openai.com/v1/chat/completions",
+             { /* ... */ }
         );
-
         const resourceData = await resourceResp.json();
-
         let url = (resourceData?.choices?.[0]?.message?.content || "").trim();
-
+        // ... (your URL cleaning logic)
         url = url.replace(/["'`\s]/g, "");
-
         if (url && url.includes(".")) {
           if (!url.startsWith("http://") && !url.startsWith("https://")) {
             url = "https://" + url;
@@ -943,7 +950,7 @@ Do not include explanations, numbers, or symbols.
     }
 
     return res.json({
-      jobRole,
+      jobRole, // This will correctly return the role that was analyzed
       requiredSkills,
       missingSkills,
       learningResources,
