@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import bodyParser from "body-parser";
 import fetch from "node-fetch";
@@ -15,12 +16,201 @@ import { DocumentProcessorServiceClient } from "@google-cloud/documentai";
 dotenv.config();
 
 // =================================================================
-// 1. CONFIGURATION & INITIALIZATION
+// 0. CONFIG: OpenAI Wrapper & Utilities
+// =================================================================
+
+const DEFAULT_PRIMARY_MODEL = process.env.OPENAI_MODEL || "gpt-5.0";
+const DEFAULT_FALLBACKS =
+  (process.env.OPENAI_FALLBACK_MODELS &&
+    process.env.OPENAI_FALLBACK_MODELS.split(",").map((s) => s.trim())) ||
+  ["gpt-4.1", "gpt-4.1-mini"];
+
+// Build the ordered models list: primary first, then fallbacks
+const MODEL_CHAIN = [DEFAULT_PRIMARY_MODEL, ...DEFAULT_FALLBACKS.filter(m => m !== DEFAULT_PRIMARY_MODEL)];
+
+// OpenAI endpoint (chat completions)
+const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
+
+// Configurable options
+const OPENAI_TIMEOUT_MS = parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10); // 25s
+const OPENAI_MAX_RETRIES = parseInt(process.env.OPENAI_MAX_RETRIES || "2", 10); // per-model retries on 429/transient
+
+/**
+ * Helper: sleep ms
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Centralized OpenAI request wrapper that:
+ *  - Tries models in MODEL_CHAIN order
+ *  - Retries on 429 or network transient failures (exponential backoff)
+ *  - Accepts `payload` (body object), and optionally `expectJson` (whether to parse JSON from model content)
+ *
+ * Returns: { status, rawResponse, parsed: optional }
+ *
+ * Usage:
+ * const { ok, data } = await openaiRequest({ messages, temperature: 0.5 });
+ */
+async function openaiRequest({
+  messages,
+  modelOverride = null,
+  temperature = 0.5,
+  maxTokens = null,
+  // whether to return the parsed `choices[0].message.content` as-is:
+  returnContent = true,
+  // Abortable timeout is enforced
+  extraBody = {},
+  // whether the caller expects the response content to be JSON string which needs parsing
+  parseJsonContent = false,
+}) {
+  const modelsToTry = modelOverride
+    ? [modelOverride, ...MODEL_CHAIN.filter((m) => m !== modelOverride)]
+    : MODEL_CHAIN;
+
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+  };
+
+  // For each model in the chain, try up to OPENAI_MAX_RETRIES times on retryable errors.
+  for (const model of modelsToTry) {
+    let attempt = 0;
+    let backoffMs = 800;
+
+    while (attempt <= OPENAI_MAX_RETRIES) {
+      attempt += 1;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), OPENAI_TIMEOUT_MS);
+
+      try {
+        const body = {
+          model,
+          messages,
+          temperature,
+          ...extraBody,
+        };
+        if (maxTokens) body.max_tokens = maxTokens;
+
+        const resp = await fetch(OPENAI_URL, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        const text = await resp.text();
+
+        // Non-OK status codes handling
+        if (!resp.ok) {
+          // parse error body if possible
+          let parsedErr = null;
+          try { parsedErr = JSON.parse(text); } catch (e) {}
+
+          // Rate-limited or server busy: 429, 503, 502 -> retry on same model
+          if ([429, 502, 503, 504].includes(resp.status)) {
+            console.warn(`[OpenAI] Model ${model} returned ${resp.status}. Attempt ${attempt} of ${OPENAI_MAX_RETRIES}. Retrying after ${backoffMs}ms.`);
+            if (attempt <= OPENAI_MAX_RETRIES) {
+              await sleep(backoffMs);
+              backoffMs *= 2;
+              continue;
+            } else {
+              // if we've exhausted retries for this model, break to try next model
+              console.warn(`[OpenAI] Exhausted retries for model ${model}. Trying next fallback model.`);
+              break;
+            }
+          }
+
+          // For other non-retriable errors, try next model in chain
+          console.error(`[OpenAI] Non-retriable error from model ${model}: HTTP ${resp.status} - ${text}`);
+          break; // move to next model
+        }
+
+        // Response OK
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          // If response is not JSON, return raw text
+          data = { raw: text };
+        }
+
+        // Extract content (if requested)
+        if (returnContent) {
+          try {
+            const content =
+              data?.choices?.[0]?.message?.content ??
+              data?.choices?.[0]?.message ??
+              data?.choices?.[0]?.text ??
+              null;
+            if (parseJsonContent && content) {
+              // Trim possible ```json blocks
+              const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+              const cleaned = jsonMatch && jsonMatch[1] ? jsonMatch[1].trim() : content.trim();
+              let parsed;
+              try {
+                parsed = JSON.parse(cleaned);
+              } catch (e) {
+                // If parsing fails, throw to trigger fallback or expose error to caller
+                const err = new Error("Failed to parse JSON content returned by model.");
+                err.rawContent = cleaned;
+                throw err;
+              }
+              return { ok: true, modelUsed: model, response: data, content: content, parsed };
+            }
+            return { ok: true, modelUsed: model, response: data, content: content };
+          } catch (err) {
+            // Parsing error - move to fallback models
+            console.error(`[OpenAI] Error parsing model ${model} content:`, err.message || err);
+            // If this was a JSON parse failure and we have other models, try next one
+            break;
+          }
+        } else {
+          return { ok: true, modelUsed: model, response: data };
+        }
+      } catch (err) {
+        clearTimeout(timeout);
+        // Abort error on timeout
+        if (err.name === "AbortError") {
+          console.warn(`[OpenAI] Request to model ${model} timed out after ${OPENAI_TIMEOUT_MS}ms. Attempt ${attempt} of ${OPENAI_MAX_RETRIES}.`);
+          if (attempt <= OPENAI_MAX_RETRIES) {
+            await sleep(backoffMs);
+            backoffMs *= 2;
+            continue;
+          } else {
+            console.warn(`[OpenAI] Exhausted retries for model ${model} due to timeouts. Trying next model.`);
+            break;
+          }
+        }
+
+        // Network or other transient errors -> retry same model a couple times
+        console.warn(`[OpenAI] Network/transient error for model ${model}:`, err.message || err);
+        if (attempt <= OPENAI_MAX_RETRIES) {
+          await sleep(backoffMs);
+          backoffMs *= 2;
+          continue;
+        } else {
+          console.warn(`[OpenAI] Exhausted retries for model ${model} after network errors. Trying next model.`);
+          break;
+        }
+      }
+    } // end attempts for this model
+    // Try next model in the chain
+  } // end model loop
+
+  // If we've reached here, all models failed
+  return { ok: false, error: "All models failed or returned non-retriable errors." };
+}
+
+// =================================================================
+// 1. CONFIGURATION & INITIALIZATION (original preserved)
 // =================================================================
 
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    // Ensure the uploads directory exists
     const uploadDir = "uploads/";
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
@@ -41,7 +231,7 @@ const app = express();
 app.use(bodyParser.json({ limit: "10mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const AI_MODEL = process.env.OPENAI_MODEL || "gpt-3.5-turbo";
+const AI_MODEL = DEFAULT_PRIMARY_MODEL;
 let sttClient = null;
 
 const firebaseServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON
@@ -105,7 +295,7 @@ try {
 const db = admin.firestore();
 
 // =================================================================
-// 2. HELPERS
+// 2. HELPERS (unchanged logic, minor adjustments to use wrapper)
 // =================================================================
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function extractResumeText(filePath, fileMimeType) {
@@ -228,31 +418,13 @@ Summarize your professional opinion in 3–5 sentences:
 - Estimated ATS score (out of 100)
 - Hiring-readiness level (e.g., Ready for submission, Needs moderate revisions, Major rewrite needed)
 `;
+
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: AI_MODEL,
-        messages: [{ role: "user", content: analysisPrompt }],
-        temperature: 0.5,
-      }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok || !data?.choices?.[0]?.message?.content) {
-      console.error(
-        "OpenAI error during feedback generation:",
-        JSON.stringify(data, null, 2)
-      );
-      throw new Error("Failed to get analysis from AI model.");
-    }
-    console.log("AI analysis successful.");
-    return data.choices[0].message.content.trim();
+    // Use wrapper: we expect text (markdown) response, not JSON parsed
+    const messages = [{ role: "user", content: analysisPrompt }];
+    const aiResp = await openaiRequest({ messages, temperature: 0.5, returnContent: true });
+    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI request failed.");
+    return aiResp.content;
   } catch (error) {
     console.error("Error calling OpenAI for resume feedback:", error);
     throw new Error("Could not get feedback from AI.");
@@ -420,14 +592,11 @@ const findJobs = async (params) => {
   console.log("[findJobs] API Key is loaded.");
 
   try {
-    // ⬇️ MODIFICATION 1: Get jobLimit, default to 50 if not provided
     const { query, employment_types, jobLimit = 50 } = params || {};
     if (!query || query.trim() === "") return [];
 
     const BASE_URL = "https://jsearch.p.rapidapi.com/search";
 
-    // ⬇️ MODIFICATION 2: Calculate pages based on 10 jobs/page
-    // If jobLimit is 5, this fetches 1 page. If 50, it fetches 5 pages.
     const totalPages = Math.ceil(jobLimit / 10);
     const allResults = [];
 
@@ -484,7 +653,6 @@ const findJobs = async (params) => {
       return [];
     }
     const jobs = await Promise.all(
-      // ⬇️ MODIFICATION 3: Slice the final array to the exact jobLimit
       allResults.slice(0, jobLimit).map(async (job) => {
         const logoUrl = await getCompanyLogo(
           job.employer_name,
@@ -528,7 +696,7 @@ const findJobs = async (params) => {
 };
 
 // =================================================================
-// 3. Tools configuration
+// 3. Tools configuration (unchanged)
 // =================================================================
 
 const tools = [
@@ -566,7 +734,7 @@ const tools = [
 ];
 
 // =================================================================
-// 4. API Endpoints
+// 4. API Endpoints (major changes: all OpenAI calls use openaiRequest wrapper)
 // =================================================================
 
 app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
@@ -680,7 +848,7 @@ Follow these rules with absolute consistency:
    - Never use slang or filler words. Maintain a polished, conversational tone.
 
 2) **Language Handling**
-   - Detected language for this request: \${detectedLanguage}.
+   - Detected language for this request: ${detectedLanguage}.
    - Supported languages: English, Hindi, Punjabi.
    - If the detected language is supported, respond ONLY in that language.
    - If unsupported, default to **English** automatically.
@@ -750,105 +918,89 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
       { role: "user", content: message },
     ];
 
-    const openAiResponse = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: AI_MODEL,
-          messages,
-          tools: tools,
-          tool_choice: "auto",
-        }),
-      }
-    );
+    // Send initial request to OpenAI
+    const initialResp = await openaiRequest({
+      messages,
+      temperature: 0.6,
+      returnContent: true,
+    });
 
-    const openAiData = await openAiResponse.json();
-    if (!openAiData || !openAiData.choices || openAiData.choices.length === 0) {
-      console.error(
-        "OpenAI returned no choices:",
-        JSON.stringify(openAiData, null, 2)
-      );
-      return res
-        .status(500)
-        .json({ error: "Invalid response from language model." });
+    if (!initialResp.ok) {
+      console.error("OpenAI initial response failed:", initialResp.error || initialResp);
+      return res.status(500).json({ error: "Invalid response from language model." });
     }
 
-    const firstMsg = openAiData.choices[0].message;
+    const firstMsgContent = initialResp.content || "";
+    // If model indicates tool calls via a tool-calling convention in message content (legacy), you may parse it.
+    // However in this codebase you previously used `tool_calls` from model response; that depends on higher-level tool support.
+    // We will attempt to detect a request to call a tool by checking a JSON-like structure in the assistant message.
+    // For compatibility, if model returns a JSON indicating function calls, parse it and run functions.
 
-    if (firstMsg && firstMsg.tool_calls) {
-      messages.push(firstMsg);
-
-      for (const toolCall of firstMsg.tool_calls) {
-        const functionName = toolCall.function.name;
-        const functionArgsRaw = toolCall.function.arguments || "{}";
-        let functionArgs;
+    // Try to detect a "tool call" style JSON in the assistant message (best-effort)
+    let toolCallDetected = null;
+    try {
+      // Look for a JSON block that requests a function: {"tool": "find_jobs", "args": {...}}
+      const toolJsonMatch = firstMsgContent.match(/```json\s*([\s\S]*?)\s*```/) || firstMsgContent.match(/\{[\s\S]*\}/);
+      if (toolJsonMatch && toolJsonMatch[1]) {
+        const attemptJson = toolJsonMatch[1];
+        const parsed = JSON.parse(attemptJson);
+        if (parsed && (parsed.tool || parsed.function || parsed.action)) {
+          toolCallDetected = parsed;
+        }
+      } else if (toolJsonMatch && toolJsonMatch[0]) {
+        // maybe matched the whole object
         try {
-          functionArgs = JSON.parse(functionArgsRaw);
-        } catch (e) {
-          functionArgs = {};
-        }
+          const parsed = JSON.parse(toolJsonMatch[0]);
+          if (parsed && (parsed.tool || parsed.function || parsed.action)) {
+            toolCallDetected = parsed;
+          }
+        } catch (e) {}
+      }
+    } catch (e) {
+      // ignore parsing errors; proceed to return message
+    }
 
-        console.log("Model requested tool:", functionName, functionArgs);
+    if (toolCallDetected) {
+      console.log("Detected tool call request from model:", toolCallDetected);
+      const functionName = toolCallDetected.tool || toolCallDetected.function || toolCallDetected.action;
+      const functionArgs = toolCallDetected.args || toolCallDetected.arguments || {};
 
-        let toolResult = null;
-        if (functionName === "find_jobs") {
-          console.log("Chat is calling find_jobs, setting limit to 5.");
-          const chatJobParams = {
-            ...functionArgs, // (e.g., query: "java developer")
-            jobLimit: 5, // Add our hard-coded limit
-          };
-          toolResult = await findJobs(chatJobParams);
-        } else if (functionName === "get_user_info") {
-          toolResult = await fetchUserPreferences(uid);
-        } else {
-          toolResult = { error: "Unknown function requested." };
-        }
-
-        messages.push({
-          role: "tool",
-          tool_call_id: toolCall.id,
-          name: functionName,
-          content: JSON.stringify(toolResult),
-        });
+      let toolResult = null;
+      if (functionName === "find_jobs") {
+        const chatJobParams = {
+          ...functionArgs,
+          jobLimit: functionArgs.jobLimit || 5,
+        };
+        toolResult = await findJobs(chatJobParams);
+      } else if (functionName === "get_user_info") {
+        toolResult = await fetchUserPreferences(uid);
+      } else {
+        toolResult = { error: "Unknown function requested." };
       }
 
-      const finalResponse = await fetch(
-        "https://api.openai.com/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-          },
+      // Append tool result and ask model to produce final message
+      const followupMessages = [
+        { role: "system", content: systemPrompt },
+        ...transformedHistory,
+        { role: "assistant", content: firstMsgContent },
+        { role: "tool", name: functionName, content: JSON.stringify(toolResult) },
+        { role: "user", content: "Use the tool results above to produce a helpful response." },
+      ];
 
-          body: JSON.stringify({ model: AI_MODEL, messages: messages }),
-        }
-      );
+      const finalResp = await openaiRequest({
+        messages: followupMessages,
+        temperature: 0.6,
+        returnContent: true,
+      });
 
-      const finalData = await finalResponse.json();
-      if (!finalData || !finalData.choices || finalData.choices.length === 0) {
-        console.error(
-          "OpenAI second call failed:",
-          JSON.stringify(finalData, null, 2)
-        );
-        return res
-          .status(500)
-          .json({ error: "Failed to generate final response." });
+      if (!finalResp.ok) {
+        console.error("OpenAI final response failed:", finalResp.error || finalResp);
+        return res.status(500).json({ error: "Failed to generate final response." });
       }
-
-      const finalMsg =
-        finalData.choices[0].message?.content ||
-        finalData.choices[0].message ||
-        "";
-      return res.json({ reply: finalMsg, detectedLanguage });
+      return res.json({ reply: finalResp.content, detectedLanguage });
     } else {
-      const replyContent = firstMsg?.content || "";
-      return res.json({ reply: replyContent, detectedLanguage });
+      // No tool call detected — return assistant content
+      return res.json({ reply: firstMsgContent, detectedLanguage });
     }
   } catch (err) {
     console.error("Error in /chat:", err);
@@ -859,7 +1011,6 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
 });
 
 app.get("/skills/analyze", async (req, res) => {
-  // 1. Get both uid and the optional jobRole from the query
   const { uid, jobRole: queryJobRole } = req.query;
 
   if (!uid) return res.status(400).json({ error: "User ID required." });
@@ -870,12 +1021,8 @@ app.get("/skills/analyze", async (req, res) => {
       return res.status(404).json({ error: "User profile not found." });
     }
 
-    // 2. Determine the job role to use
-    //    Priority: 1. The job role from the query (search)
-    //              2. The user's saved job role (profile analysis)
     const jobRole = queryJobRole || userPrefs.jobRole;
 
-    // 3. Handle case where no job role is found anywhere
     if (!jobRole) {
       return res
         .status(404)
@@ -888,75 +1035,41 @@ app.get("/skills/analyze", async (req, res) => {
       .map((s) => s.trim())
       .filter(Boolean);
 
-    // 4. --- NEW SINGLE PROMPT ---
-    // Ask for all skills AND learning resources in one go, formatted as JSON.
     const combinedQuestion = `
 Analyze the skills for a '${jobRole}'.
 1. List the top 12 most important technical skills.
-2. For the all skills in that list, provide one high-quality, public URL to a learning resource (like a tutorial, documentation, or course).
+2. For all skills in that list, provide one high-quality, public URL to a learning resource (like a tutorial, documentation, or course).
 
 Respond with ONLY a single valid JSON object in the following format:
 {
   "skill_list": ["Skill 1", "Skill 2", "Skill 3", ...],
   "learning_links": {
     "Skill 1": "https://url.for.skill.1",
-    "Skill 2": "https://url.for.skill.2",
-    "Skill 5": "https://url.for.skill.5"
+    "Skill 2": "https://url.for.skill.2"
   }
 }
 Do not include any other text, explanations, or markdown ticks.
 `;
 
-    // 5. --- SINGLE API CALL ---
-    // Using gpt-4o for better JSON reliability, like your /counseling route
-    const openAIResp = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-4o", 
-          messages: [{ role: "user", content: combinedQuestion }],
-          // This tells the AI to force JSON output
-          response_format: { type: "json_object" }, 
-        }),
-      }
-    );
+    const messages = [{ role: "user", content: combinedQuestion }];
+    // We expect JSON content, so set parseJsonContent: true
+    const aiResp = await openaiRequest({ messages, temperature: 0.25, returnContent: true, parseJsonContent: true });
 
-    const aiData = await openAIResp.json();
-    const aiContent = aiData?.choices?.[0]?.message?.content;
+    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI returned empty response.");
 
-    if (!aiContent) {
-      throw new Error("Empty response from AI");
-    }
-
-    // 6. --- PARSE THE JSON RESPONSE ---
-    let parsedData;
-    try {
-        parsedData = JSON.parse(aiContent); // The AI will return a valid JSON string
-    } catch (e) {
-        console.error("Failed to parse AI JSON response:", aiContent);
-        throw new Error("AI returned invalid JSON.");
-    }
-
+    const parsedData = aiResp.parsed; // parsed JSON
     const requiredSkills = (parsedData.skill_list || []).map(s => s.trim().toLowerCase());
-    // This will now be populated!
-    const learningResources = parsedData.learning_links || {}; 
+    const learningResources = parsedData.learning_links || {};
 
-    // 7. --- CALCULATE MISSING SKILLS (same as before) ---
     const missingSkills = requiredSkills.filter(
       (s) => !userSkills.includes(s)
     );
 
-    // 8. --- RETURN THE FULL OBJECT ---
     return res.json({
       jobRole,
       requiredSkills,
       missingSkills,
-      learningResources, // This will no longer be empty
+      learningResources,
     });
 
   } catch (err) {
@@ -964,6 +1077,7 @@ Do not include any other text, explanations, or markdown ticks.
     return res.status(500).json({ error: "Skill analysis failed." });
   }
 });
+
 app.get("/ping", (req, res) => {
   res.status(200).json({ status: "ok", message: "Server is awake" });
 });
@@ -981,15 +1095,12 @@ app.get("/jobs", async (req, res) => {
       queryToUse = "jobs in India";
     }
 
-    // ⬇️ MODIFICATION HERE ⬇️
-    // Bundle params into an object and set the 50 job limit
     const jobPageParams = {
       query: queryToUse,
       employment_types,
       jobLimit: 50,
     };
     const jobsResult = await findJobs(jobPageParams);
-    // ⬆️ END MODIFICATION ⬆️
 
     return res.json(jobsResult);
   } catch (err) {
@@ -1135,53 +1246,17 @@ IMPORTANT:
 - Respond ONLY with the JSON object (no explanations).
 `;
 
-  // ---------- AI Request ----------
   try {
-    const openAiResponse = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-            model: "gpt-4o",
-            messages: [{ role: "user", content: contentPrompt }],
-            temperature: 0.3,
-          }),
-      }
-    );
+    const messages = [{ role: "user", content: contentPrompt }];
+    const aiResp = await openaiRequest({ messages, temperature: 0.3, returnContent: true, parseJsonContent: true });
 
-    const data = await openAiResponse.json();
+    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI returned empty response.");
 
-    if (!openAiResponse.ok || !data?.choices?.[0]?.message?.content) {
-      throw new Error("Failed to get guide from AI model.");
-    }
-
-    let rawContent = data.choices[0].message.content.trim();
-
-    // If AI wraps JSON inside ```json
-    try {
-      const jsonMatch = rawContent.match(/```json\s*([\s\S]*?)\s*```/);
-      if (jsonMatch && jsonMatch[1]) {
-        rawContent = jsonMatch[1].trim();
-      }
-
-      const finalData = JSON.parse(rawContent);
-
-      res.json({
-        content: finalData.content || "",
-        universities: finalData.universities || [],
-      });
-    } catch (parseError) {
-      console.error(
-        "[Custom Guide] Failed to parse AI JSON response:",
-        parseError
-      );
-      console.error("[Custom Guide] Attempted to parse:", rawContent);
-      throw new Error("AI model returned an unparsable JSON structure.");
-    }
+    const finalData = aiResp.parsed;
+    res.json({
+      content: finalData.content || "",
+      universities: finalData.universities || [],
+    });
   } catch (error) {
     console.error("Error in /counseling/custom-guide:", error);
     res.status(500).json({
@@ -1211,30 +1286,15 @@ Example:
 `;
 
   try {
-    const openAiResponse = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-3.5-turbo",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.2,
-        }),
-      }
-    );
+    const messages = [{ role: "user", content: prompt }];
+    const aiResp = await openaiRequest({ messages, temperature: 0.2, returnContent: true, parseJsonContent: true });
+    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI error.");
 
-    const data = await openAiResponse.json();
-    const content = data.choices[0].message.content;
-
-    const specializationsList = JSON.parse(content);
-
+    const specializationsList = aiResp.parsed;
     res.json({ specializations: specializationsList });
   } catch (err) {
     console.error(`Error fetching specializations for ${degree}:`, err);
+    res.status(500).json({ error: "Failed to fetch specializations." });
   }
 });
 
@@ -1262,27 +1322,11 @@ Example (structure only):
 `;
 
   try {
-    const openAiResponse = await fetch(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-3.5-turbo",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.1,
-        }),
-      }
-    );
+    const messages = [{ role: "user", content: prompt }];
+    const aiResp = await openaiRequest({ messages, temperature: 0.1, returnContent: true, parseJsonContent: true });
+    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI returned error.");
 
-    const data = await openAiResponse.json();
-    const content = data.choices[0].message.content;
-
-    const degreesList = JSON.parse(content);
-
+    const degreesList = aiResp.parsed;
     res.json({ degrees: degreesList });
   } catch (err) {
     console.error("Error fetching degrees from AI:", err);
@@ -1356,24 +1400,10 @@ app.post("/interview-prep/increment-stat", async (req, res) => {
 
 async function simpleOpenAICall(prompt, model = AI_MODEL, temperature = 0.5) {
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [{ role: "user", content: prompt }],
-        temperature: temperature,
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok || !data?.choices?.[0]?.message?.content) {
-      console.error("OpenAI simple call error:", JSON.stringify(data, null, 2));
-      throw new Error("Failed to get response from AI model.");
-    }
-    return data.choices[0].message.content.trim();
+    const messages = [{ role: "user", content: prompt }];
+    const aiResp = await openaiRequest({ messages, modelOverride: model, temperature, returnContent: true });
+    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI simple call failed.");
+    return aiResp.content;
   } catch (error) {
     console.error("Error in simpleOpenAICall:", error);
     throw error;
@@ -1567,7 +1597,7 @@ Generate **${count}** unique, high-impact, and **actionable interview tips** tha
     res.json({ tips: tipsList });
   } catch (err) {
     console.error("Error in /interview-prep/tips-list:", err);
-    console.error("Failed to parse this JSON:", tipsJson);
+    console.error("Failed to parse this JSON:", err);
     res.status(500).json({ error: "Failed to generate tips list." });
   }
 });
@@ -1611,7 +1641,7 @@ Do not include any commentary, markdown, or text outside the JSON object.
 `;
 
   try {
-    let feedbackJson = await simpleOpenAICall(prompt, "gpt-4o", 0.4);
+    let feedbackJson = await simpleOpenAICall(prompt, "gpt-4.1", 0.4);
 
     const jsonMatch = feedbackJson.match(/```json\s*([\s\S]*?)\s*```/);
     if (jsonMatch && jsonMatch[1]) {
@@ -1622,7 +1652,7 @@ Do not include any commentary, markdown, or text outside the JSON object.
     res.json(feedback);
   } catch (err) {
     console.error("Error in /interview-prep/evaluate-star:", err);
-    console.error("Failed to parse this JSON:", feedbackJson);
+    console.error("Failed to parse this JSON:", err);
     res.status(500).json({ error: "Failed to evaluate STAR answer." });
   }
 });
@@ -1774,7 +1804,7 @@ Respond **only** with a valid JSON array of exactly **${count} objects**, using 
 `;
 
   try {
-    let questionsJson = await simpleOpenAICall(prompt, "gpt-4o", 0.6);
+    let questionsJson = await simpleOpenAICall(prompt, "gpt-4.1", 0.6);
 
     const jsonMatch = questionsJson.match(/```json\s*([\s\S]*?)\s*```/);
     if (jsonMatch && jsonMatch[1]) {
@@ -1785,7 +1815,7 @@ Respond **only** with a valid JSON array of exactly **${count} objects**, using 
     res.json(questionsList);
   } catch (err) {
     console.error("Error in /interview-prep/technical-questions:", err);
-    console.error("Failed to parse this JSON:", questionsJson);
+    console.error("Failed to parse this JSON:", err);
     res.status(500).json({ error: "Failed to generate technical questions." });
   }
 });
