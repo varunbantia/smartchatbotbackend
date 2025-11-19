@@ -1050,6 +1050,7 @@ app.delete("/users/:uid/saved-jobs/:jobId", async (req, res) => {
 
 app.get("/counseling/custom-guide", async (req, res) => {
   const { fromCountry, toCountry, degree, topics } = req.query;
+
   console.log(
     `[Custom Guide] Request: ${fromCountry} to ${toCountry} for ${degree}`
   );
@@ -1066,49 +1067,75 @@ app.get("/counseling/custom-guide", async (req, res) => {
 
   let contentInstructions =
     'The "content" field MUST be a detailed Markdown guide. ONLY include the following sections:\n';
+
+  // Default university instructions
   let universityInstructions =
     'The "universities" field MUST be an empty array [].';
 
+  // Dynamic topic instructions
   if (requestedTopics.includes("Admission Requirements")) {
     contentInstructions +=
-      "1.  **Admission Requirements:** General requirements for a student from ${fromCountry} (e.g., typical GPA, required tests like GRE/GMAT, language tests like IELTS/TOEFL, required documents like SOP/LORs).\n";
-  }
-  if (requestedTopics.includes("Estimated Annual Cost")) {
-    contentInstructions +=
-      "2.  **Estimated Annual Cost:** Provide a realistic estimated range for Tuition and Living Expenses. *You MUST specify the currency* (e.g., USD, CAD, GBP).\n";
-  }
-  if (requestedTopics.includes("Visa Process")) {
-    contentInstructions +=
-      "3.  **Visa Process:** Provide the *official name* of the student visa (e.g., F-1, Study Permit) and 2-3 key, actionable steps for a student from ${fromCountry} (e.g., 'Receive I-20/LOA', 'Pay SEVIS Fee', 'Provide Proof of Funds').\n";
-  }
-  if (requestedTopics.includes("Scholarship Opportunities")) {
-    contentInstructions +=
-      "4.  **Scholarship Opportunities:** List 2-4 major, non-generic scholarships available for students from ${fromCountry}. *You MUST include a direct, valid, clickable Markdown link* to the official scholarship page for each one.\n";
-  }
-  if (requestedTopics.includes("Post-Study Work Options")) {
-    contentInstructions +=
-      "5.  **Post-Study Work Options:** A 2-4 sentence summary of post-graduation work opportunities. Include the *official permit name* (e.g., OPT, PGWP) and its typical duration.\n";
-  }
-  if (requestedTopics.includes("Top Universities")) {
-    universityInstructions =
-      'The "universities" field MUST be a JSON array of 3-5 objects. Each object MUST have "name" (official university name), "location" (City, State/Province), and "link" (the *direct international admissions/application URL*, NOT the homepage).';
-    contentInstructions +=
-      "6.  **Top Universities:** Briefly mention the universities you are providing in the 'universities' JSON array.\n";
+      "1. **Admission Requirements:** General requirements for a student from ${fromCountry} (GPA, GRE/GMAT, IELTS/TOEFL, SOP, LORs).\n";
   }
 
+  if (requestedTopics.includes("Estimated Annual Cost")) {
+    contentInstructions +=
+      "2. **Estimated Annual Cost:** Provide realistic tuition + living cost ranges. *Specify the currency explicitly* (USD, CAD, GBP, etc.).\n";
+  }
+
+  if (requestedTopics.includes("Visa Process")) {
+    contentInstructions +=
+      "3. **Visa Process:** Provide the official visa name and 2–3 actionable steps for students from ${fromCountry}.\n";
+  }
+
+  if (requestedTopics.includes("Scholarship Opportunities")) {
+    contentInstructions +=
+      "4. **Scholarship Opportunities:** Provide 2–4 major scholarships with *real, valid, clickable Markdown links*.\n";
+  }
+
+  if (requestedTopics.includes("Post-Study Work Options")) {
+    contentInstructions +=
+      "5. **Post-Study Work Options:** 2–4 sentence summary including official work permit name (OPT, PGWP, etc.).\n";
+  }
+
+  // TOP UNIVERSITIES (admission-cycle smart logic)
+  if (requestedTopics.includes("Top Universities")) {
+    universityInstructions =
+      'The "universities" field MUST be a JSON array of 3–5 objects. Each object MUST contain:\n' +
+      '• "name" – official university name\n' +
+      '• "location" – City, State/Province\n' +
+      '• "link" – IMPORTANT RULE:\n' +
+      '     - If admissions are OPEN now → provide the *direct admissions/application URL*.\n' +
+      '     - If admissions are NOT open or status is unclear → provide the *main university homepage URL*.\n' +
+      "You MUST NOT guess. If cycle status cannot be confirmed, treat admissions as NOT open.\n";
+
+    contentInstructions +=
+      "6. **Top Universities:** Mention the listed universities and note that links depend on admission-cycle availability.\n";
+  }
+
+  // Final content prompt to OpenAI
   const contentPrompt = `
-You are an expert international study consultant. A student from "${fromCountry}" wants to pursue a "${degree}" degree in "${toCountry}".
-Your response MUST be a single, valid JSON object with TWO top-level keys: "content" (a Markdown string) and "universities" (a JSON array).
+You are an expert international study consultant.  
+A student from "${fromCountry}" wants to pursue a "${degree}" degree in "${toCountry}".
+
+Your response MUST be a valid JSON object with:
+1. "content" — a Markdown guide
+2. "universities" — an array
+
 ---
 ### CONTENT FIELD INSTRUCTIONS
 ${contentInstructions}
 ---
 ### UNIVERSITIES FIELD INSTRUCTIONS
 ${universityInstructions}
----
-Respond ONLY with the complete JSON object.
+
+IMPORTANT:
+- DO NOT invent admission opening/closing dates.
+- If uncertain → assume admissions are NOT open and use homepage URL.
+- Respond ONLY with the JSON object (no explanations).
 `;
 
+  // ---------- AI Request ----------
   try {
     const openAiResponse = await fetch(
       "https://api.openai.com/v1/chat/completions",
@@ -1119,20 +1146,22 @@ Respond ONLY with the complete JSON object.
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: "gpt-4o",
-          messages: [{ role: "user", content: contentPrompt }],
-          temperature: 0.3,
-        }),
+            model: "gpt-4o",
+            messages: [{ role: "user", content: contentPrompt }],
+            temperature: 0.3,
+          }),
       }
     );
 
     const data = await openAiResponse.json();
+
     if (!openAiResponse.ok || !data?.choices?.[0]?.message?.content) {
       throw new Error("Failed to get guide from AI model.");
     }
 
     let rawContent = data.choices[0].message.content.trim();
 
+    // If AI wraps JSON inside ```json
     try {
       const jsonMatch = rawContent.match(/```json\s*([\s\S]*?)\s*```/);
       if (jsonMatch && jsonMatch[1]) {
@@ -1155,12 +1184,11 @@ Respond ONLY with the complete JSON object.
     }
   } catch (error) {
     console.error("Error in /counseling/custom-guide:", error);
-    res
-      .status(500)
-      .json({ error: error.message || "Failed to generate custom guide." });
+    res.status(500).json({
+      error: error.message || "Failed to generate custom guide.",
+    });
   }
 });
-
 app.get("/counseling/get-specializations", async (req, res) => {
   const { degree } = req.query;
   if (!degree) {
