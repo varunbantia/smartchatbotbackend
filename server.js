@@ -19,20 +19,27 @@ dotenv.config();
 // 0. CONFIG: OpenAI Wrapper & Utilities
 // =================================================================
 
-const DEFAULT_PRIMARY_MODEL = process.env.OPENAI_MODEL || "gpt-5.0";
-const DEFAULT_FALLBACKS =
-  (process.env.OPENAI_FALLBACK_MODELS &&
-    process.env.OPENAI_FALLBACK_MODELS.split(",").map((s) => s.trim())) ||
-  ["gpt-4.1", "gpt-4.1-mini"];
+const DEFAULT_PRIMARY_MODEL = process.env.OPENAI_MODEL || "gpt-4o"; // FIX: Updated to a current model (e.g., gpt-4o)
+const DEFAULT_FALLBACKS = (process.env.OPENAI_FALLBACK_MODELS &&
+  process.env.OPENAI_FALLBACK_MODELS.split(",").map((s) => s.trim())) || [
+  "gpt-4-turbo",
+  "gpt-3.5-turbo",
+]; // FIX: Updated to currently supported models (e.g., gpt-4-turbo, gpt-3.5-turbo)
 
 // Build the ordered models list: primary first, then fallbacks
-const MODEL_CHAIN = [DEFAULT_PRIMARY_MODEL, ...DEFAULT_FALLBACKS.filter(m => m !== DEFAULT_PRIMARY_MODEL)];
+const MODEL_CHAIN = [
+  DEFAULT_PRIMARY_MODEL,
+  ...DEFAULT_FALLBACKS.filter((m) => m !== DEFAULT_PRIMARY_MODEL),
+];
 
 // OpenAI endpoint (chat completions)
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
 // Configurable options
-const OPENAI_TIMEOUT_MS = parseInt(process.env.OPENAI_TIMEOUT_MS || "25000", 10); // 25s
+const OPENAI_TIMEOUT_MS = parseInt(
+  process.env.OPENAI_TIMEOUT_MS || "25000",
+  10
+); // 25s
 const OPENAI_MAX_RETRIES = parseInt(process.env.OPENAI_MAX_RETRIES || "2", 10); // per-model retries on 429/transient
 
 /**
@@ -44,9 +51,9 @@ function sleep(ms) {
 
 /**
  * Centralized OpenAI request wrapper that:
- *  - Tries models in MODEL_CHAIN order
- *  - Retries on 429 or network transient failures (exponential backoff)
- *  - Accepts `payload` (body object), and optionally `expectJson` (whether to parse JSON from model content)
+ *  - Tries models in MODEL_CHAIN order
+ *  - Retries on 429 or network transient failures (exponential backoff)
+ *  - Accepts `payload` (body object), and optionally `expectJson` (whether to parse JSON from model content)
  *
  * Returns: { status, rawResponse, parsed: optional }
  *
@@ -57,12 +64,9 @@ async function openaiRequest({
   messages,
   modelOverride = null,
   temperature = 0.5,
-  maxTokens = null,
-  // whether to return the parsed `choices[0].message.content` as-is:
-  returnContent = true,
-  // Abortable timeout is enforced
-  extraBody = {},
-  // whether the caller expects the response content to be JSON string which needs parsing
+  maxTokens = null, // whether to return the parsed `choices[0].message.content` as-is:
+  returnContent = true, // Abortable timeout is enforced
+  extraBody = {}, // whether the caller expects the response content to be JSON string which needs parsing
   parseJsonContent = false,
 }) {
   const modelsToTry = modelOverride
@@ -72,9 +76,8 @@ async function openaiRequest({
   const headers = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-  };
+  }; // For each model in the chain, try up to OPENAI_MAX_RETRIES times on retryable errors.
 
-  // For each model in the chain, try up to OPENAI_MAX_RETRIES times on retryable errors.
   for (const model of modelsToTry) {
     let attempt = 0;
     let backoffMs = 800;
@@ -102,43 +105,46 @@ async function openaiRequest({
 
         clearTimeout(timeout);
 
-        const text = await resp.text();
+        const text = await resp.text(); // Non-OK status codes handling
 
-        // Non-OK status codes handling
         if (!resp.ok) {
           // parse error body if possible
           let parsedErr = null;
-          try { parsedErr = JSON.parse(text); } catch (e) {}
+          try {
+            parsedErr = JSON.parse(text);
+          } catch (e) {} // Rate-limited or server busy: 429, 503, 502 -> retry on same model
 
-          // Rate-limited or server busy: 429, 503, 502 -> retry on same model
           if ([429, 502, 503, 504].includes(resp.status)) {
-            console.warn(`[OpenAI] Model ${model} returned ${resp.status}. Attempt ${attempt} of ${OPENAI_MAX_RETRIES}. Retrying after ${backoffMs}ms.`);
+            console.warn(
+              `[OpenAI] Model ${model} returned ${resp.status}. Attempt ${attempt} of ${OPENAI_MAX_RETRIES}. Retrying after ${backoffMs}ms.`
+            );
             if (attempt <= OPENAI_MAX_RETRIES) {
               await sleep(backoffMs);
               backoffMs *= 2;
               continue;
             } else {
               // if we've exhausted retries for this model, break to try next model
-              console.warn(`[OpenAI] Exhausted retries for model ${model}. Trying next fallback model.`);
+              console.warn(
+                `[OpenAI] Exhausted retries for model ${model}. Trying next fallback model.`
+              );
               break;
             }
-          }
+          } // For other non-retriable errors, try next model in chain
 
-          // For other non-retriable errors, try next model in chain
-          console.error(`[OpenAI] Non-retriable error from model ${model}: HTTP ${resp.status} - ${text}`);
+          console.error(
+            `[OpenAI] Non-retriable error from model ${model}: HTTP ${resp.status} - ${text}`
+          );
           break; // move to next model
-        }
+        } // Response OK
 
-        // Response OK
         let data;
         try {
           data = JSON.parse(text);
         } catch (e) {
           // If response is not JSON, return raw text
           data = { raw: text };
-        }
+        } // Extract content (if requested)
 
-        // Extract content (if requested)
         if (returnContent) {
           try {
             const content =
@@ -149,62 +155,87 @@ async function openaiRequest({
             if (parseJsonContent && content) {
               // Trim possible ```json blocks
               const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
-              const cleaned = jsonMatch && jsonMatch[1] ? jsonMatch[1].trim() : content.trim();
+              const cleaned =
+                jsonMatch && jsonMatch[1]
+                  ? jsonMatch[1].trim()
+                  : content.trim();
               let parsed;
               try {
                 parsed = JSON.parse(cleaned);
               } catch (e) {
                 // If parsing fails, throw to trigger fallback or expose error to caller
-                const err = new Error("Failed to parse JSON content returned by model.");
+                const err = new Error(
+                  "Failed to parse JSON content returned by model."
+                );
                 err.rawContent = cleaned;
                 throw err;
               }
-              return { ok: true, modelUsed: model, response: data, content: content, parsed };
+              return {
+                ok: true,
+                modelUsed: model,
+                response: data,
+                content: content,
+                parsed,
+              };
             }
-            return { ok: true, modelUsed: model, response: data, content: content };
+            return {
+              ok: true,
+              modelUsed: model,
+              response: data,
+              content: content,
+            };
           } catch (err) {
             // Parsing error - move to fallback models
-            console.error(`[OpenAI] Error parsing model ${model} content:`, err.message || err);
-            // If this was a JSON parse failure and we have other models, try next one
+            console.error(
+              `[OpenAI] Error parsing model ${model} content:`,
+              err.message || err
+            ); // If this was a JSON parse failure and we have other models, try next one
             break;
           }
         } else {
           return { ok: true, modelUsed: model, response: data };
         }
       } catch (err) {
-        clearTimeout(timeout);
-        // Abort error on timeout
+        clearTimeout(timeout); // Abort error on timeout
         if (err.name === "AbortError") {
-          console.warn(`[OpenAI] Request to model ${model} timed out after ${OPENAI_TIMEOUT_MS}ms. Attempt ${attempt} of ${OPENAI_MAX_RETRIES}.`);
+          console.warn(
+            `[OpenAI] Request to model ${model} timed out after ${OPENAI_TIMEOUT_MS}ms. Attempt ${attempt} of ${OPENAI_MAX_RETRIES}.`
+          );
           if (attempt <= OPENAI_MAX_RETRIES) {
             await sleep(backoffMs);
             backoffMs *= 2;
             continue;
           } else {
-            console.warn(`[OpenAI] Exhausted retries for model ${model} due to timeouts. Trying next model.`);
+            console.warn(
+              `[OpenAI] Exhausted retries for model ${model} due to timeouts. Trying next model.`
+            );
             break;
           }
-        }
+        } // Network or other transient errors -> retry same model a couple times
 
-        // Network or other transient errors -> retry same model a couple times
-        console.warn(`[OpenAI] Network/transient error for model ${model}:`, err.message || err);
+        console.warn(
+          `[OpenAI] Network/transient error for model ${model}:`,
+          err.message || err
+        );
         if (attempt <= OPENAI_MAX_RETRIES) {
           await sleep(backoffMs);
           backoffMs *= 2;
           continue;
         } else {
-          console.warn(`[OpenAI] Exhausted retries for model ${model} after network errors. Trying next model.`);
+          console.warn(
+            `[OpenAI] Exhausted retries for model ${model} after network errors. Trying next model.`
+          );
           break;
         }
       }
-    } // end attempts for this model
-    // Try next model in the chain
-  } // end model loop
+    } // end attempts for this model // Try next model in the chain
+  } // end model loop // If we've reached here, all models failed
 
-  // If we've reached here, all models failed
-  return { ok: false, error: "All models failed or returned non-retriable errors." };
+  return {
+    ok: false,
+    error: "All models failed or returned non-retriable errors.",
+  };
 }
-
 // =================================================================
 // 1. CONFIGURATION & INITIALIZATION (original preserved)
 // =================================================================
@@ -422,7 +453,11 @@ Summarize your professional opinion in 3–5 sentences:
   try {
     // Use wrapper: we expect text (markdown) response, not JSON parsed
     const messages = [{ role: "user", content: analysisPrompt }];
-    const aiResp = await openaiRequest({ messages, temperature: 0.5, returnContent: true });
+    const aiResp = await openaiRequest({
+      messages,
+      temperature: 0.5,
+      returnContent: true,
+    });
     if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI request failed.");
     return aiResp.content;
   } catch (error) {
@@ -926,8 +961,13 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
     });
 
     if (!initialResp.ok) {
-      console.error("OpenAI initial response failed:", initialResp.error || initialResp);
-      return res.status(500).json({ error: "Invalid response from language model." });
+      console.error(
+        "OpenAI initial response failed:",
+        initialResp.error || initialResp
+      );
+      return res
+        .status(500)
+        .json({ error: "Invalid response from language model." });
     }
 
     const firstMsgContent = initialResp.content || "";
@@ -940,7 +980,9 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
     let toolCallDetected = null;
     try {
       // Look for a JSON block that requests a function: {"tool": "find_jobs", "args": {...}}
-      const toolJsonMatch = firstMsgContent.match(/```json\s*([\s\S]*?)\s*```/) || firstMsgContent.match(/\{[\s\S]*\}/);
+      const toolJsonMatch =
+        firstMsgContent.match(/```json\s*([\s\S]*?)\s*```/) ||
+        firstMsgContent.match(/\{[\s\S]*\}/);
       if (toolJsonMatch && toolJsonMatch[1]) {
         const attemptJson = toolJsonMatch[1];
         const parsed = JSON.parse(attemptJson);
@@ -962,8 +1004,12 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
 
     if (toolCallDetected) {
       console.log("Detected tool call request from model:", toolCallDetected);
-      const functionName = toolCallDetected.tool || toolCallDetected.function || toolCallDetected.action;
-      const functionArgs = toolCallDetected.args || toolCallDetected.arguments || {};
+      const functionName =
+        toolCallDetected.tool ||
+        toolCallDetected.function ||
+        toolCallDetected.action;
+      const functionArgs =
+        toolCallDetected.args || toolCallDetected.arguments || {};
 
       let toolResult = null;
       if (functionName === "find_jobs") {
@@ -983,8 +1029,15 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
         { role: "system", content: systemPrompt },
         ...transformedHistory,
         { role: "assistant", content: firstMsgContent },
-        { role: "tool", name: functionName, content: JSON.stringify(toolResult) },
-        { role: "user", content: "Use the tool results above to produce a helpful response." },
+        {
+          role: "tool",
+          name: functionName,
+          content: JSON.stringify(toolResult),
+        },
+        {
+          role: "user",
+          content: "Use the tool results above to produce a helpful response.",
+        },
       ];
 
       const finalResp = await openaiRequest({
@@ -994,8 +1047,13 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
       });
 
       if (!finalResp.ok) {
-        console.error("OpenAI final response failed:", finalResp.error || finalResp);
-        return res.status(500).json({ error: "Failed to generate final response." });
+        console.error(
+          "OpenAI final response failed:",
+          finalResp.error || finalResp
+        );
+        return res
+          .status(500)
+          .json({ error: "Failed to generate final response." });
       }
       return res.json({ reply: finalResp.content, detectedLanguage });
     } else {
@@ -1026,7 +1084,10 @@ app.get("/skills/analyze", async (req, res) => {
     if (!jobRole) {
       return res
         .status(404)
-        .json({ error: "Job role missing. No query role provided and no profile role set." });
+        .json({
+          error:
+            "Job role missing. No query role provided and no profile role set.",
+        });
     }
 
     const userSkills = (userPrefs.skills || "")
@@ -1053,17 +1114,23 @@ Do not include any other text, explanations, or markdown ticks.
 
     const messages = [{ role: "user", content: combinedQuestion }];
     // We expect JSON content, so set parseJsonContent: true
-    const aiResp = await openaiRequest({ messages, temperature: 0.25, returnContent: true, parseJsonContent: true });
+    const aiResp = await openaiRequest({
+      messages,
+      temperature: 0.25,
+      returnContent: true,
+      parseJsonContent: true,
+    });
 
-    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI returned empty response.");
+    if (!aiResp.ok)
+      throw new Error(aiResp.error || "OpenAI returned empty response.");
 
     const parsedData = aiResp.parsed; // parsed JSON
-    const requiredSkills = (parsedData.skill_list || []).map(s => s.trim().toLowerCase());
+    const requiredSkills = (parsedData.skill_list || []).map((s) =>
+      s.trim().toLowerCase()
+    );
     const learningResources = parsedData.learning_links || {};
 
-    const missingSkills = requiredSkills.filter(
-      (s) => !userSkills.includes(s)
-    );
+    const missingSkills = requiredSkills.filter((s) => !userSkills.includes(s));
 
     return res.json({
       jobRole,
@@ -1071,7 +1138,6 @@ Do not include any other text, explanations, or markdown ticks.
       missingSkills,
       learningResources,
     });
-
   } catch (err) {
     console.error("Error in /skills/analyze:", err);
     return res.status(500).json({ error: "Skill analysis failed." });
@@ -1216,8 +1282,8 @@ app.get("/counseling/custom-guide", async (req, res) => {
       '• "name" – official university name\n' +
       '• "location" – City, State/Province\n' +
       '• "link" – IMPORTANT RULE:\n' +
-      '     - If admissions are OPEN now → provide the *direct admissions/application URL*.\n' +
-      '     - If admissions are NOT open or status is unclear → provide the *main university homepage URL*.\n' +
+      "     - If admissions are OPEN now → provide the *direct admissions/application URL*.\n" +
+      "     - If admissions are NOT open or status is unclear → provide the *main university homepage URL*.\n" +
       "You MUST NOT guess. If cycle status cannot be confirmed, treat admissions as NOT open.\n";
 
     contentInstructions +=
@@ -1248,9 +1314,15 @@ IMPORTANT:
 
   try {
     const messages = [{ role: "user", content: contentPrompt }];
-    const aiResp = await openaiRequest({ messages, temperature: 0.3, returnContent: true, parseJsonContent: true });
+    const aiResp = await openaiRequest({
+      messages,
+      temperature: 0.3,
+      returnContent: true,
+      parseJsonContent: true,
+    });
 
-    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI returned empty response.");
+    if (!aiResp.ok)
+      throw new Error(aiResp.error || "OpenAI returned empty response.");
 
     const finalData = aiResp.parsed;
     res.json({
@@ -1287,7 +1359,12 @@ Example:
 
   try {
     const messages = [{ role: "user", content: prompt }];
-    const aiResp = await openaiRequest({ messages, temperature: 0.2, returnContent: true, parseJsonContent: true });
+    const aiResp = await openaiRequest({
+      messages,
+      temperature: 0.2,
+      returnContent: true,
+      parseJsonContent: true,
+    });
     if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI error.");
 
     const specializationsList = aiResp.parsed;
@@ -1323,7 +1400,12 @@ Example (structure only):
 
   try {
     const messages = [{ role: "user", content: prompt }];
-    const aiResp = await openaiRequest({ messages, temperature: 0.1, returnContent: true, parseJsonContent: true });
+    const aiResp = await openaiRequest({
+      messages,
+      temperature: 0.1,
+      returnContent: true,
+      parseJsonContent: true,
+    });
     if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI returned error.");
 
     const degreesList = aiResp.parsed;
@@ -1401,8 +1483,14 @@ app.post("/interview-prep/increment-stat", async (req, res) => {
 async function simpleOpenAICall(prompt, model = AI_MODEL, temperature = 0.5) {
   try {
     const messages = [{ role: "user", content: prompt }];
-    const aiResp = await openaiRequest({ messages, modelOverride: model, temperature, returnContent: true });
-    if (!aiResp.ok) throw new Error(aiResp.error || "OpenAI simple call failed.");
+    const aiResp = await openaiRequest({
+      messages,
+      modelOverride: model,
+      temperature,
+      returnContent: true,
+    });
+    if (!aiResp.ok)
+      throw new Error(aiResp.error || "OpenAI simple call failed.");
     return aiResp.content;
   } catch (error) {
     console.error("Error in simpleOpenAICall:", error);
