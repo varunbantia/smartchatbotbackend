@@ -1501,9 +1501,7 @@ app.get("/interview-prep/questions", async (req, res) => {
   const { category, jobRole = "general", count = 10 } = req.query;
 
   if (!category) {
-    return res
-      .status(400)
-      .json({ error: "Category is required (e.g., HR, Technical)." });
+    return res.status(400).json({ error: "Category is required (e.g., HR, Technical)." });
   }
 
   const prompt = `
@@ -1532,13 +1530,21 @@ Generate **${count}** highly relevant **${category}** interview questions tailor
 
   try {
     const content = await simpleOpenAICall(prompt, AI_MODEL, 0.7);
-    const questionsList = JSON.parse(content); // The prompt forces JSON
+
+    const cleaned = content
+      .replace(/```json\s*/i, '')
+      .replace(/```/g, '')
+      .trim();
+
+    const questionsList = JSON.parse(cleaned);
+
     res.json({ questions: questionsList });
   } catch (err) {
     console.error("Error in /interview-prep/questions:", err);
     res.status(500).json({ error: "Failed to generate questions." });
   }
 });
+
 app.get("/interview-prep/daily-tip", async (req, res) => {
   const prompt = `
 You are a world-class career coach and interview strategist with deep experience mentoring candidates across global industries.
