@@ -783,8 +783,6 @@ app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
         `Received resume file for analysis: ${filePath} (Original: ${originalFilename}, MIME: ${fileMimeType})`
     );
 
-    const MIN_RESUME_TEXT_LENGTH = 100; // 🚀 CRITICAL: Set a minimum threshold (e.g., 100 characters)
-
     const allowedMimeTypes = [
         "application/pdf",
         "image/jpeg",
@@ -803,35 +801,41 @@ app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
     }
 
     try {
-        // 1. Extract text from the uploaded document/image
+        // 1. Extract text from the uploaded document/image (Existing Step)
         const resumeText = await extractResumeText(filePath, fileMimeType);
 
-        // --- 🚀 NEW VALIDATION STEP ---
-        if (!resumeText || resumeText.length < MIN_RESUME_TEXT_LENGTH) {
-            console.warn(`Resume validation failed: Text length is too short (${resumeText ? resumeText.length : 0}).`);
-            
-            // Delete the file and return an error
-            return res
-                .status(400)
-                .json({ 
-                    error: "The uploaded file does not contain enough recognizable text to be a valid resume. Please ensure you upload a structured document (PDF/DOCX) or a clear image of a document." 
-                });
+        // --- 🚀 NEW VALIDATION LOGIC ---
+        // Validate text quality and content type using AI/heuristics
+        const { isValid, reason } = await isActualResume(resumeText);
+        
+        if (!isValid) {
+            console.warn(`Document failed content validation: ${reason}`);
+            // Reject immediately with a clean error message visible to the user
+            return res.status(400).json({
+                error: "This document does not appear to be a resume. Please upload a structured document (PDF/DOCX) detailing your work experience and education.",
+                isNotResume: true // Flag to simplify error handling on the frontend
+            });
         }
-        // ----------------------------------
+        // -----------------------------
 
-        // 2. Process the content
+        // 2. If valid, proceed with the expensive analysis
         const analysisResult = await getResumeFeedback(resumeText);
 
         // 3. Send the final result
         res.json({ analysisResult: analysisResult });
-        
+
     } catch (error) {
         console.error("Error during resume analysis:", error);
+        // If the error is from extraction (e.g., OCR failed completely)
+        if (error.message.includes("Extraction failed")) {
+            return res.status(500).json({ 
+                error: "Failed to read the file content. Please ensure your document is clear and readable." 
+            });
+        }
         res
             .status(500)
             .json({ error: error.message || "Failed to analyze resume." });
     } finally {
-        // Ensure the file is deleted regardless of success or failure
         if (fs.existsSync(filePath)) {
             fs.unlink(filePath, (err) => {
                 if (err) console.error(`Error deleting temp file ${filePath}:`, err);
@@ -840,6 +844,40 @@ app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
         }
     }
 });
+
+// ---------------------------------------------------------------------
+// 💡 REQUIRED NEW FUNCTION: isActualResume
+// This function needs to be defined in your backend environment.
+// It should return { isValid: boolean, reason: string }.
+// ---------------------------------------------------------------------
+
+async function isActualResume(text) {
+    // Basic Heuristic Check (quick and cheap)
+    if (!text || text.length < 50) {
+        return { isValid: false, reason: "Text too short." };
+    }
+
+    // AI Content Classification (more accurate but costs compute/API time)
+    // You could use a lightweight LLM prompt here:
+    // Prompt: "Classify the following text as 'RESUME' or 'OTHER'. Text: [text]"
+    // Or, check for keywords:
+    const requiredKeywords = ["Experience", "Education", "Skills", "Projects"];
+    const textLower = text.toLowerCase();
+    
+    let score = 0;
+    for (const keyword of requiredKeywords) {
+        if (textLower.includes(keyword.toLowerCase())) {
+            score++;
+        }
+    }
+    
+    if (score < 2) { // Require at least 2 of the major keywords
+        return { isValid: false, reason: "Lacks core resume keywords (Experience/Education)." };
+    }
+
+    // If it passes basic heuristics, assume it's valid for now.
+    return { isValid: true, reason: "Content appears to be a resume." };
+}
 
 app.get("/", (req, res) => {
   res.json({ status: "ok", message: "SmartChatbot backend running" });
