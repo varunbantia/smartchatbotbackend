@@ -773,52 +773,72 @@ const tools = [
 // =================================================================
 
 app.post("/analyze-resume", upload.single("resumeFile"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "No resume file uploaded." });
-  }
-  const filePath = req.file.path;
-  const fileMimeType = req.file.mimetype;
-  const originalFilename = req.file.originalname;
-  console.log(
-    `Received resume file for analysis: ${filePath} (Original: ${originalFilename}, MIME: ${fileMimeType})`
-  );
-
-  const allowedMimeTypes = [
-    "application/pdf",
-    "image/jpeg",
-    "image/png",
-    "image/tiff",
-    "image/gif",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ];
-  if (!allowedMimeTypes.includes(fileMimeType)) {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    console.warn(`Unsupported MIME type for Document AI OCR: ${fileMimeType}`);
-    return res
-      .status(400)
-      .json({ error: `Unsupported file type: ${fileMimeType}.` });
-  }
-
-  try {
-    const resumeText = await extractResumeText(filePath, fileMimeType);
-
-    const analysisResult = await getResumeFeedback(resumeText);
-
-    res.json({ analysisResult: analysisResult });
-  } catch (error) {
-    console.error("Error during resume analysis:", error);
-    res
-      .status(500)
-      .json({ error: error.message || "Failed to analyze resume." });
-  } finally {
-    if (fs.existsSync(filePath)) {
-      fs.unlink(filePath, (err) => {
-        if (err) console.error(`Error deleting temp file ${filePath}:`, err);
-        else console.log(`Deleted temp file: ${filePath}`);
-      });
+    if (!req.file) {
+        return res.status(400).json({ error: "No resume file uploaded." });
     }
-  }
+    const filePath = req.file.path;
+    const fileMimeType = req.file.mimetype;
+    const originalFilename = req.file.originalname;
+    console.log(
+        `Received resume file for analysis: ${filePath} (Original: ${originalFilename}, MIME: ${fileMimeType})`
+    );
+
+    const MIN_RESUME_TEXT_LENGTH = 100; // 🚀 CRITICAL: Set a minimum threshold (e.g., 100 characters)
+
+    const allowedMimeTypes = [
+        "application/pdf",
+        "image/jpeg",
+        "image/png",
+        "image/tiff",
+        "image/gif",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ];
+    if (!allowedMimeTypes.includes(fileMimeType)) {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        console.warn(`Unsupported MIME type for Document AI OCR: ${fileMimeType}`);
+        return res
+            .status(400)
+            .json({ error: `Unsupported file type: ${fileMimeType}.` });
+    }
+
+    try {
+        // 1. Extract text from the uploaded document/image
+        const resumeText = await extractResumeText(filePath, fileMimeType);
+
+        // --- 🚀 NEW VALIDATION STEP ---
+        if (!resumeText || resumeText.length < MIN_RESUME_TEXT_LENGTH) {
+            console.warn(`Resume validation failed: Text length is too short (${resumeText ? resumeText.length : 0}).`);
+            
+            // Delete the file and return an error
+            return res
+                .status(400)
+                .json({ 
+                    error: "The uploaded file does not contain enough recognizable text to be a valid resume. Please ensure you upload a structured document (PDF/DOCX) or a clear image of a document." 
+                });
+        }
+        // ----------------------------------
+
+        // 2. Process the content
+        const analysisResult = await getResumeFeedback(resumeText);
+
+        // 3. Send the final result
+        res.json({ analysisResult: analysisResult });
+        
+    } catch (error) {
+        console.error("Error during resume analysis:", error);
+        res
+            .status(500)
+            .json({ error: error.message || "Failed to analyze resume." });
+    } finally {
+        // Ensure the file is deleted regardless of success or failure
+        if (fs.existsSync(filePath)) {
+            fs.unlink(filePath, (err) => {
+                if (err) console.error(`Error deleting temp file ${filePath}:`, err);
+                else console.log(`Deleted temp file: ${filePath}`);
+            });
+        }
+    }
 });
 
 app.get("/", (req, res) => {
