@@ -1127,34 +1127,32 @@ Your goal: Deliver expert guidance, meaningful resources, and trustworthy career
 });
 
 app.get("/skills/analyze", async (req, res) => {
-  const { uid, jobRole: queryJobRole } = req.query;
+    // queryJobRole will be a string if searched, or null/undefined if "Analyze Profile" is clicked.
+    const { uid, jobRole: queryJobRole } = req.query; 
 
-  if (!uid) return res.status(400).json({ error: "User ID required." });
+    if (!uid) return res.status(400).json({ error: "User ID required." });
 
-  try {
-    const userPrefs = await fetchUserPreferences(uid);
-    if (!userPrefs) {
-      return res.status(404).json({ error: "User profile not found." });
-    }
+    try {
+        const userPrefs = await fetchUserPreferences(uid);
+        if (!userPrefs) {
+            // Cannot proceed if user profile is missing, as we need userSkills for both scenarios.
+            return res.status(404).json({ error: "User profile not found." });
+        }
 
-    const jobRole = queryJobRole || userPrefs.jobRole;
+        const userSkills = (userPrefs.skills || "")
+            .toLowerCase()
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+        
+        // --- 🛑 CORE LOGIC: DIFFERENTIATE ANALYSIS TYPES 🛑 ---
 
-    if (!jobRole) {
-      return res
-        .status(404)
-        .json({
-          error:
-            "Job role missing. No query role provided and no profile role set.",
-        });
-    }
-
-    const userSkills = (userPrefs.skills || "")
-      .toLowerCase()
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    const combinedQuestion = `
+        if (queryJobRole) {
+            // --- SCENARIO 1: SEARCH BY JOB ROLE (Skill Gap Analysis) ---
+            
+            const jobRole = queryJobRole;
+            
+            const combinedQuestion = `
 Analyze the skills for a '${jobRole}'.
 1. List the top 12 most important technical skills.
 2. For all skills in that list, provide one high-quality, public URL to a learning resource (like a tutorial, documentation, or course).
@@ -1170,36 +1168,90 @@ Respond with ONLY a single valid JSON object in the following format:
 Do not include any other text, explanations, or markdown ticks.
 `;
 
-    const messages = [{ role: "user", content: combinedQuestion }];
-    // We expect JSON content, so set parseJsonContent: true
-    const aiResp = await openaiRequest({
-      messages,
-      temperature: 0.25,
-      returnContent: true,
-      parseJsonContent: true,
-    });
+            const messages = [{ role: "user", content: combinedQuestion }];
+            const aiResp = await openaiRequest({
+                messages,
+                temperature: 0.25,
+                returnContent: true,
+                parseJsonContent: true,
+            });
 
-    if (!aiResp.ok)
-      throw new Error(aiResp.error || "OpenAI returned empty response.");
+            if (!aiResp.ok)
+                throw new Error(aiResp.error || "OpenAI returned empty response.");
 
-    const parsedData = aiResp.parsed; // parsed JSON
-    const requiredSkills = (parsedData.skill_list || []).map((s) =>
-      s.trim().toLowerCase()
-    );
-    const learningResources = parsedData.learning_links || {};
+            const parsedData = aiResp.parsed; // parsed JSON
+            const requiredSkills = (parsedData.skill_list || []).map((s) =>
+                s.trim().toLowerCase()
+            );
+            const learningResources = parsedData.learning_links || {};
 
-    const missingSkills = requiredSkills.filter((s) => !userSkills.includes(s));
+            // Calculate missing skills based on the job role requirements
+            const missingSkills = requiredSkills.filter((s) => !userSkills.includes(s));
 
-    return res.json({
-      jobRole,
-      requiredSkills,
-      missingSkills,
-      learningResources,
-    });
-  } catch (err) {
-    console.error("Error in /skills/analyze:", err);
-    return res.status(500).json({ error: "Skill analysis failed." });
-  }
+            // Return full skill gap analysis
+            return res.json({
+                jobRole,
+                requiredSkills,
+                missingSkills,
+                learningResources,
+            });
+
+        } else {
+            // --- SCENARIO 2: ANALYZE BASED ON PROFILE (Skills-Only Analysis) ---
+            
+            if (userSkills.length === 0) {
+                 // Return the error that the client handles (to show a Toast)
+                 return res.status(400).json({
+                     jobRole: null, // Explicitly null
+                     error: "Cannot analyze: No skills found in profile.",
+                 });
+            }
+
+            const skillList = userSkills.join(", ");
+            const profileQuestion = `
+The user has the following skills: ${skillList}.
+Provide one high-quality, public URL learning resource for EACH of these skills to help the user advance their knowledge. 
+Do not suggest any missing skills based on a job title.
+The job role should be returned as "My Skills Profile".
+
+Respond with ONLY a single valid JSON object in the following format:
+{
+    "jobRole": "My Skills Profile", 
+    "missingSkills": [],
+    "learningResources": {
+        "Skill 1": "https://url.for.skill.1",
+        "Skill 2": "https://url.for.skill.2"
+    }
+}
+Do not include any other text, explanations, or markdown ticks.
+`;
+            
+            const messages = [{ role: "user", content: profileQuestion }];
+            const aiResp = await openaiRequest({
+                messages,
+                temperature: 0.25,
+                returnContent: true,
+                parseJsonContent: true,
+            });
+
+            if (!aiResp.ok)
+                throw new Error(aiResp.error || "OpenAI returned empty response.");
+
+            const parsedData = aiResp.parsed;
+            
+            // Return skills-only analysis
+            return res.json({
+                jobRole: parsedData.jobRole || "My Skills Profile",
+                requiredSkills: userSkills, // Use user's skills here for client display consistency
+                missingSkills: [], // IMPORTANT: Ensure this is empty
+                learningResources: parsedData.learningResources || {},
+            });
+        }
+
+    } catch (err) {
+        console.error("Error in /skills/analyze:", err);
+        return res.status(500).json({ error: "Skill analysis failed." });
+    }
 });
 
 app.get("/ping", (req, res) => {
