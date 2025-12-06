@@ -1207,24 +1207,33 @@ Do not include any other text, explanations, or markdown ticks.
                  });
             }
 
-            const skillList = userSkills.join(", ");
-            const profileQuestion = `
-The user has the following skills: ${skillList}.
-Provide one high-quality, public URL learning resource for EACH of these skills to help the user advance their knowledge. 
-Do not suggest any missing skills based on a job title.
+            // Inside the 'else' block (Skills-Only Analysis) of app.get("/skills/analyze")
+
+const skillList = userSkills.join(", ");
+const profileQuestion = `
+The user has the following primary skills: ${skillList}.
+Your task is to provide an analysis to help the user advance their career by focusing on skills that are highly complementary, advanced, or standard in a professional context for their listed skills.
+
+1. **Identify 8-10 highly relevant Complementary Skills:** These should be technologies, frameworks, or methodologies that are immediately useful alongside their existing skills (e.g., if the skill is 'Java', suggest 'Spring Boot', 'SQL', 'Maven', 'Unit Testing').
+2. **Provide High-Quality Learning Resources:** For EACH of these 8-10 Complementary Skills, provide one high-quality, public URL learning resource.
+3. **Important:** The result must strictly be a Skills-Only Analysis. Do not perform a gap analysis against a specific job role.
+
 The job role should be returned as "My Skills Profile".
+The 'missingSkills' array must contain the 8-10 complementary skills you identified.
 
 Respond with ONLY a single valid JSON object in the following format:
 {
     "jobRole": "My Skills Profile", 
-    "missingSkills": [],
+    "missingSkills": ["Complementary Skill 1", "Complementary Skill 2", ...],
     "learningResources": {
-        "Skill 1": "https://url.for.skill.1",
-        "Skill 2": "https://url.for.skill.2"
+        "Complementary Skill 1": "https://url.for.skill.1",
+        "Complementary Skill 2": "https://url.for.skill.2"
     }
 }
 Do not include any other text, explanations, or markdown ticks.
 `;
+
+// ... (Rest of the analysis code follows) ...
             
             const messages = [{ role: "user", content: profileQuestion }];
             const aiResp = await openaiRequest({
